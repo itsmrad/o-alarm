@@ -42,6 +42,26 @@ class AlarmEngineModule : Module() {
     AsyncFunction("previewAlarm") { _: Map<String, Any?>, promise: Promise ->
       promise.reject(NotImplementedException("previewAlarm"))
     }
+
+    AsyncFunction("getActiveRinging") { promise: Promise ->
+      promise.reject(NotImplementedException("getActiveRinging"))
+    }
+
+    AsyncFunction("snooze") { _: String, promise: Promise ->
+      promise.reject(NotImplementedException("snooze"))
+    }
+
+    AsyncFunction("dismiss") { _: String, _: Map<String, Any?>, promise: Promise ->
+      promise.reject(NotImplementedException("dismiss"))
+    }
+
+    AsyncFunction("drainObservedEvents") { promise: Promise ->
+      promise.reject(NotImplementedException("drainObservedEvents"))
+    }
+
+    AsyncFunction("ackObservedEvents") { _: List<String>, promise: Promise ->
+      promise.reject(NotImplementedException("ackObservedEvents"))
+    }
   }
 }
 

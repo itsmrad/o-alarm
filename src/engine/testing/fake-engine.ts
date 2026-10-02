@@ -3,11 +3,15 @@ import {
   type AlarmEngine,
   type AlarmEngineErrorCode,
   type AlarmScheduleSpec,
+  type DismissOptions,
+  type DismissResult,
   type EngineEventMap,
   type EngineEventType,
   type EngineReadiness,
   type EngineSubscription,
+  type ObservedEngineEvent,
   type PermissionStatus,
+  type RingingState,
   type ScheduledAlarm,
 } from '../types';
 
@@ -23,6 +27,10 @@ export class FakeAlarmEngine implements AlarmEngine {
   failRead: AlarmEngineErrorCode | null = null;
   /** Simulates an OS that silently alters what it stores (verify must catch it). */
   corruptOnSchedule: ((entry: ScheduledAlarm) => ScheduledAlarm) | null = null;
+  /** Set by tests to simulate an alarm ringing. */
+  ringing: RingingState | null = null;
+  /** Set by tests to simulate events the native layer recorded. */
+  observed: ObservedEngineEvent[] = [];
   private listeners = new Map<EngineEventType, Set<(event: never) => void>>();
 
   async schedule(spec: AlarmScheduleSpec): Promise<ScheduledAlarm> {
@@ -59,6 +67,55 @@ export class FakeAlarmEngine implements AlarmEngine {
   }
 
   async previewAlarm(): Promise<void> {}
+
+  async getActiveRinging(): Promise<RingingState | null> {
+    return this.ringing ? { ...this.ringing } : null;
+  }
+
+  private takeRinging(scheduleId: string): RingingState {
+    if (this.ringing?.scheduleId !== scheduleId) {
+      throw new AlarmEngineError('NOT_RINGING', `"${scheduleId}" is not ringing`);
+    }
+    const ringing = this.ringing;
+    this.ringing = null;
+    return ringing;
+  }
+
+  /** Schedules `<occurrenceKey>#snooze-n` 9 minutes after the ring (fake fixed duration). */
+  async snooze(scheduleId: string): Promise<ScheduledAlarm> {
+    this.calls.push(`snooze:${scheduleId}`);
+    const ringing = this.takeRinging(scheduleId);
+    const base = this.entries.find((e) => e.occurrenceKey === ringing.occurrenceKey) ?? null;
+    if (!base) throw new AlarmEngineError('INVALID_SPEC', 'fake: no spec for ringing alarm');
+    const fireAt = new Date(Date.parse(ringing.firedAt) + 9 * 60_000).toISOString();
+    const id = `${ringing.occurrenceKey}#snooze-${ringing.snoozeCount + 1}`;
+    return this.schedule({ ...base, id, kind: 'snooze', fireAt });
+  }
+
+  async dismiss(scheduleId: string, options: DismissOptions): Promise<DismissResult> {
+    this.calls.push(`dismiss:${scheduleId}`);
+    const ringing = this.takeRinging(scheduleId);
+    if (options.wakeCheckAt === undefined) return {};
+    const base = this.entries.find((e) => e.occurrenceKey === ringing.occurrenceKey) ?? null;
+    if (!base) throw new AlarmEngineError('INVALID_SPEC', 'fake: no spec for ringing alarm');
+    const id = `${ringing.occurrenceKey}#wake-check-1`;
+    return {
+      wakeCheck: await this.schedule({
+        ...base,
+        id,
+        kind: 'wake_check',
+        fireAt: options.wakeCheckAt,
+      }),
+    };
+  }
+
+  async drainObservedEvents(): Promise<ObservedEngineEvent[]> {
+    return this.observed.map((e) => ({ ...e }));
+  }
+
+  async ackObservedEvents(ids: string[]): Promise<void> {
+    this.observed = this.observed.filter((e) => !ids.includes(e.id));
+  }
 
   addListener<K extends EngineEventType>(
     type: K,
