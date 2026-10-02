@@ -29,6 +29,7 @@ export type {
   ScheduleKind,
   ScheduledAlarm,
   StopEventPayload,
+  WallClock,
 } from '@modules/alarm-engine';
 
 export type EngineKind = 'native' | 'preview';

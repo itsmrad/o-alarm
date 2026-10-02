@@ -89,7 +89,8 @@ export class FakeAlarmEngine implements AlarmEngine {
     if (!base) throw new AlarmEngineError('INVALID_SPEC', 'fake: no spec for ringing alarm');
     const fireAt = new Date(Date.parse(ringing.firedAt) + 9 * 60_000).toISOString();
     const id = `${ringing.occurrenceKey}#snooze-${ringing.snoozeCount + 1}`;
-    return this.schedule({ ...base, id, kind: 'snooze', fireAt });
+    const { wallClock: _w, ...instant } = base;
+    return this.schedule({ ...instant, id, kind: 'snooze', fireAt });
   }
 
   async dismiss(scheduleId: string, options: DismissOptions): Promise<DismissResult> {
@@ -99,9 +100,10 @@ export class FakeAlarmEngine implements AlarmEngine {
     const base = this.entries.find((e) => e.occurrenceKey === ringing.occurrenceKey) ?? null;
     if (!base) throw new AlarmEngineError('INVALID_SPEC', 'fake: no spec for ringing alarm');
     const id = `${ringing.occurrenceKey}#wake-check-1`;
+    const { wallClock: _w, ...instant } = base;
     return {
       wakeCheck: await this.schedule({
-        ...base,
+        ...instant,
         id,
         kind: 'wake_check',
         fireAt: options.wakeCheckAt,
