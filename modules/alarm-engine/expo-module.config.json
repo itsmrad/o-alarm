@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["AlarmEngineModule"]
+  },
+  "android": {
+    "modules": ["com.oalarm.alarmengine.AlarmEngineModule"]
+  }
+}
