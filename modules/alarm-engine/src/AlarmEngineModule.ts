@@ -3,9 +3,13 @@ import { NativeModule, requireOptionalNativeModule } from 'expo';
 import type {
   AlarmEngineModuleEvents,
   AlarmScheduleSpec,
+  DismissOptions,
+  DismissResult,
   EngineReadiness,
+  ObservedEngineEvent,
   PermissionKind,
   PermissionStatus,
+  RingingState,
   ScheduledAlarm,
 } from './AlarmEngine.types';
 
@@ -17,6 +21,11 @@ export declare class AlarmEngineNativeModule extends NativeModule<AlarmEngineMod
   getReadiness(): Promise<EngineReadiness>;
   requestPermission(kind: PermissionKind): Promise<PermissionStatus>;
   previewAlarm(spec: AlarmScheduleSpec): Promise<void>;
+  getActiveRinging(): Promise<RingingState | null>;
+  snooze(scheduleId: string): Promise<ScheduledAlarm>;
+  dismiss(scheduleId: string, options: DismissOptions): Promise<DismissResult>;
+  drainObservedEvents(): Promise<ObservedEngineEvent[]>;
+  ackObservedEvents(ids: string[]): Promise<void>;
 }
 
 /**

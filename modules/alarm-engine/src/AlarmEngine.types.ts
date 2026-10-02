@@ -74,3 +74,48 @@ export type AlarmEngineModuleEvents = {
   onDismiss: (event: AlarmEngineEventPayload) => void;
   onStop: (event: StopEventPayload) => void;
 };
+
+/** The alarm currently ringing (cold start / relaunch while ringing). */
+export interface RingingState extends AlarmEngineEventPayload {
+  firedAt: string;
+  /** Snoozes already used for this occurrence. */
+  snoozeCount: number;
+  label: string;
+  hasMissions: boolean;
+  wakeCheck: boolean;
+  important: boolean;
+}
+
+export interface DismissOptions {
+  /** False when dismissal happened without the in-app mission chain (D14). */
+  missionCompleted: boolean;
+  /** If set, atomically schedule a `wake_check` alarm at this instant (D13). */
+  wakeCheckAt?: string;
+}
+
+export interface DismissResult {
+  wakeCheck?: ScheduledAlarm;
+}
+
+export type ObservedEngineEventType =
+  | 'trigger_received'
+  | 'snoozed'
+  | 'dismissed'
+  | 'stopped_from_system_ui'
+  | 'retriggered'
+  | 'schedule_restored_after_boot'
+  | 'tz_change_rescheduled';
+
+/**
+ * Something the native layer did or saw while JS may not have been running.
+ * Persisted natively until acknowledged: drain → record in the events table → ack.
+ */
+export interface ObservedEngineEvent {
+  /** Unique, stable id (ack key). */
+  id: string;
+  type: ObservedEngineEventType;
+  scheduleId: string;
+  alarmId: string;
+  occurrenceKey: string;
+  at: string;
+}

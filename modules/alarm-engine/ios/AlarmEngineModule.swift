@@ -35,6 +35,26 @@ public class AlarmEngineModule: Module {
     AsyncFunction("previewAlarm") { (_: [String: Any], promise: Promise) in
       rejectNotImplemented(promise, "previewAlarm")
     }
+
+    AsyncFunction("getActiveRinging") { (promise: Promise) in
+      rejectNotImplemented(promise, "getActiveRinging")
+    }
+
+    AsyncFunction("snooze") { (_: String, promise: Promise) in
+      rejectNotImplemented(promise, "snooze")
+    }
+
+    AsyncFunction("dismiss") { (_: String, _: [String: Any], promise: Promise) in
+      rejectNotImplemented(promise, "dismiss")
+    }
+
+    AsyncFunction("drainObservedEvents") { (promise: Promise) in
+      rejectNotImplemented(promise, "drainObservedEvents")
+    }
+
+    AsyncFunction("ackObservedEvents") { (_: [String], promise: Promise) in
+      rejectNotImplemented(promise, "ackObservedEvents")
+    }
   }
 }
 
