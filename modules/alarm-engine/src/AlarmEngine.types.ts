@@ -5,6 +5,23 @@
 
 export type ScheduleKind = 'alarm' | 'snooze' | 'wake_check' | 'retrigger';
 
+/**
+ * D28: the wall-clock rule behind an `alarm` occurrence, so native can recompute it on
+ * tz/time changes (D9 rules) and arm the next recurrence itself when JS never runs.
+ * `hour`/`minute` are this occurrence's effective time (a one-off override applied), so
+ * native should derive a next recurrence from the alarm's LATEST scheduled `alarm` entry.
+ */
+export interface WallClock {
+  hour: number;
+  minute: number;
+  /** Civil date (YYYY-MM-DD) of this occurrence in its zone. */
+  localDate: string;
+  /** IANA zone for fixed-zone alarms; null = floating (device zone). */
+  timeZone: string | null;
+  /** 0 = Sunday … 6 = Saturday, ascending; empty = one-time. */
+  weekdays: number[];
+}
+
 export interface AlarmScheduleSpec {
   /** Deterministic engine id, e.g. `<alarmId>@2026-10-02` or `…#snooze-1`. Upsert key. */
   id: string;
@@ -12,6 +29,8 @@ export interface AlarmScheduleSpec {
   occurrenceKey: string;
   kind: ScheduleKind;
   fireAt: string;
+  /** Present on kind `alarm` only; snooze/wake_check/retrigger are instant-only. */
+  wallClock?: WallClock;
   label: string;
   sound: { kind: 'default' | 'system' | 'custom'; id: string | null };
   vibration: boolean;

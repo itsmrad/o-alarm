@@ -1,6 +1,6 @@
 import { upcomingOccurrences, type Alarm, type Occurrence } from '@/domain';
 
-import type { AlarmScheduleSpec, ScheduledAlarm } from './types';
+import type { AlarmScheduleSpec, ScheduledAlarm, WallClock } from './types';
 
 export function specForOccurrence(alarm: Alarm, occurrence: Occurrence): AlarmScheduleSpec {
   return {
@@ -9,6 +9,13 @@ export function specForOccurrence(alarm: Alarm, occurrence: Occurrence): AlarmSc
     occurrenceKey: occurrence.occurrenceKey,
     kind: 'alarm',
     fireAt: occurrence.fireAt.toISOString(),
+    wallClock: {
+      hour: occurrence.hour,
+      minute: occurrence.minute,
+      localDate: occurrence.localDate,
+      timeZone: alarm.timezonePolicy === 'fixed' ? alarm.timeZone : null,
+      weekdays: [...alarm.weekdays].sort((a, b) => a - b),
+    },
     label: alarm.label.trim() || 'Alarm',
     sound: alarm.sound,
     vibration: alarm.vibration,
@@ -39,7 +46,23 @@ export function desiredSpecs(
   );
 }
 
-/** Fields that must match between DB intent and engine read-back. */
+/** Order-insensitive, absent → null, so a faithful native round-trip never churns. */
+function normalizeWallClock(wallClock: WallClock | undefined) {
+  if (!wallClock) return null;
+  return [
+    wallClock.hour,
+    wallClock.minute,
+    wallClock.localDate,
+    wallClock.timeZone ?? null,
+    [...new Set(wallClock.weekdays)].sort((a, b) => a - b),
+  ];
+}
+
+/**
+ * Fields that must match between DB intent and engine read-back. Includes `wallClock`
+ * (D28): a rule change that keeps the next fire instant (e.g. adding a weekday) must still
+ * reschedule, or native would re-arm from a stale rule.
+ */
 export function specFingerprint(spec: AlarmScheduleSpec | ScheduledAlarm): string {
   return JSON.stringify([
     spec.id,
@@ -59,5 +82,6 @@ export function specFingerprint(spec: AlarmScheduleSpec | ScheduledAlarm): strin
     spec.hasMissions,
     spec.wakeCheck,
     spec.important,
+    normalizeWallClock(spec.wallClock),
   ]);
 }
