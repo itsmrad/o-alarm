@@ -1,14 +1,15 @@
-import type {
-  AlarmEngine,
-  AlarmScheduleSpec,
-  EngineEventMap,
-  EngineEventType,
-  EngineReadiness,
-  EngineSubscription,
-  PermissionStatus,
-  ScheduledAlarm,
+import {
+  AlarmEngineError,
+  type AlarmEngine,
+  type AlarmEngineErrorCode,
+  type AlarmScheduleSpec,
+  type EngineEventMap,
+  type EngineEventType,
+  type EngineReadiness,
+  type EngineSubscription,
+  type PermissionStatus,
+  type ScheduledAlarm,
 } from '../types';
-import { AlarmEngineError, type AlarmEngineErrorCode } from '../types';
 
 /**
  * Test double with an inspectable store (duplicates allowed, to simulate a buggy OS
