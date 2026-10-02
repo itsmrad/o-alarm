@@ -22,6 +22,7 @@
     "date-fns": "^4.4.0",
     "drizzle-orm": "^0.45.3",
     "expo": "~57.0.26",
+    "expo-asset": "~57.0.18",
     "expo-build-properties": "~57.0.22",
     "expo-constants": "~57.0.20",
     "expo-crypto": "~57.0.3",
@@ -44,6 +45,7 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@testing-library/react-native": "^13.3.3",
     "@types/better-sqlite3": "^9.6.0",
     "@types/jest": "^29.5.14",
     "@types/react": "~19.2.2",
@@ -59,6 +61,7 @@
     "jest-expo": "^57.0.5",
     "prettier": "^3.9.9",
     "prettier-plugin-tailwindcss": "^0.5.11",
+    "react-test-renderer": "^19.2.3",
     "tailwindcss": "^3.4.17",
     "typescript": "~6.0.3"
   }

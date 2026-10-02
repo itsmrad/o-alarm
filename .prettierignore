@@ -7,3 +7,5 @@ src/db/migrations
 supabase
 docs
 package-lock.json
+CLAUDE.md
+AGENTS.md

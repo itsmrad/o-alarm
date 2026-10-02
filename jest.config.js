@@ -6,5 +6,6 @@ module.exports = {
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/src/$1',
     '^@modules/(.*)$': '<rootDir>/modules/$1',
+    '\\.css$': '<rootDir>/jest.style-mock.js',
   },
 };

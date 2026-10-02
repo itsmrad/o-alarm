@@ -27,6 +27,9 @@ type SnoozeLimit = (typeof SNOOZE_LIMITS)[number];
 const pick = <T extends number>(options: readonly T[], value: number, fallback: T): T =>
   (options as readonly number[]).includes(value) ? (value as T) : fallback;
 
+/** Leaves the editor; falls back to Home when opened directly (deep link). */
+const close = () => (router.canGoBack() ? router.back() : router.replace('/'));
+
 /** Create (no id) or edit an alarm. Saves through the D11 write path. */
 export function AlarmEditor({ alarmId }: { alarmId?: string }) {
   const { alarms: service } = useAppServices();
@@ -101,7 +104,7 @@ export function AlarmEditor({ alarmId }: { alarmId?: string }) {
     setSaving(true);
     try {
       report(await service.save(draft()));
-      router.back();
+      close();
     } catch (error) {
       Alert.alert('Could not save alarm', error instanceof Error ? error.message : String(error));
     } finally {
@@ -112,7 +115,7 @@ export function AlarmEditor({ alarmId }: { alarmId?: string }) {
   const run = async (action: () => Promise<SaveResult>) => {
     try {
       report(await action());
-      router.back();
+      close();
     } catch (error) {
       Alert.alert('Could not update alarm', error instanceof Error ? error.message : String(error));
     }
@@ -130,7 +133,7 @@ export function AlarmEditor({ alarmId }: { alarmId?: string }) {
           if (status.state === 'failed') {
             Alert.alert('Deleted, but the system still has it', status.message);
           }
-          router.back();
+          close();
         },
       },
     ]);
@@ -141,7 +144,7 @@ export function AlarmEditor({ alarmId }: { alarmId?: string }) {
       <Stack.Screen
         options={{
           title: existing ? 'Edit Alarm' : 'New Alarm',
-          headerLeft: () => <HeaderButton label="Cancel" onPress={() => router.back()} />,
+          headerLeft: () => <HeaderButton label="Cancel" onPress={() => close()} />,
           headerRight: () => (
             <HeaderButton label="Save" emphasized disabled={saving} onPress={save} />
           ),
