@@ -1,8 +1,0 @@
-{
-  "plugins": [
-    "expo-router",
-    "expo-sqlite",
-    "expo-build-properties",
-    "expo-splash-screen"
-  ]
-}
