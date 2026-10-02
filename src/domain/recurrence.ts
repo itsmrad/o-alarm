@@ -188,3 +188,13 @@ export function pruneTransientState(alarm: Alarm, now: Date, deviceTimeZone: str
     oneOffOverride: isPast(alarm.oneOffOverride?.occurrenceKey) ? null : alarm.oneOffOverride,
   };
 }
+
+/**
+ * Civil date for a new one-time alarm at hour:minute: today if that time is still
+ * ahead in `timeZone`, otherwise tomorrow.
+ */
+export function nextDateForTime(hour: number, minute: number, now: Date, timeZone: string): string {
+  const today = localDateInZone(now, timeZone);
+  const fireToday = resolveWallClock(today, hour, minute, timeZone);
+  return formatLocalDate(fireToday.getTime() > now.getTime() ? today : addDays(today, 1));
+}

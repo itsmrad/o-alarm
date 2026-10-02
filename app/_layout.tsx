@@ -1,0 +1,86 @@
+import '../global.css';
+
+import { Stack } from 'expo-router';
+import * as SplashScreen from 'expo-splash-screen';
+import { StatusBar } from 'expo-status-bar';
+import { useEffect } from 'react';
+import { Text, View } from 'react-native';
+import { DarkTheme, DefaultTheme, ThemeProvider } from 'expo-router/react-navigation';
+
+import { AppServicesProvider } from '@/lib/app-services';
+import { useThemeColors } from '@/theme/tokens';
+
+SplashScreen.preventAutoHideAsync().catch(() => undefined);
+
+function BootScreen({ error }: { error?: Error }) {
+  useEffect(() => {
+    if (error) SplashScreen.hideAsync().catch(() => undefined);
+  }, [error]);
+  if (!error) return null;
+  // Never fail silently: if local storage cannot open, say so.
+  return (
+    <View className="flex-1 justify-center gap-3 bg-background p-6">
+      <Text className="text-title2 text-foreground">O-Alarm could not start</Text>
+      <Text className="text-body text-foreground-muted">
+        The on-device alarm database failed to open. Existing system alarms are unaffected.
+      </Text>
+      <Text className="text-footnote text-danger">{error.message}</Text>
+    </View>
+  );
+}
+
+function Navigation() {
+  const colors = useThemeColors();
+  useEffect(() => {
+    SplashScreen.hideAsync().catch(() => undefined);
+  }, []);
+  const base = colors.scheme === 'dark' ? DarkTheme : DefaultTheme;
+  return (
+    <ThemeProvider
+      value={{
+        ...base,
+        colors: {
+          ...base.colors,
+          primary: colors.accent,
+          background: colors.background,
+          card: colors.surface,
+          text: colors.foreground,
+          border: colors.border,
+          notification: colors.danger,
+        },
+      }}
+    >
+      <StatusBar style="auto" />
+      <Stack screenOptions={{ contentStyle: { backgroundColor: colors.background } }}>
+        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        <Stack.Screen name="alarm/new" options={{ presentation: 'modal', title: 'New Alarm' }} />
+        <Stack.Screen name="alarm/[id]" options={{ presentation: 'modal', title: 'Edit Alarm' }} />
+        <Stack.Screen
+          name="ringing"
+          options={{ presentation: 'fullScreenModal', headerShown: false, gestureEnabled: false }}
+        />
+        <Stack.Screen
+          name="mission"
+          options={{ presentation: 'fullScreenModal', title: 'Mission' }}
+        />
+        <Stack.Screen
+          name="wake-check"
+          options={{ presentation: 'fullScreenModal', title: 'Wake Check' }}
+        />
+        <Stack.Screen name="paywall" options={{ presentation: 'modal', title: 'O-Alarm Pro' }} />
+      </Stack>
+    </ThemeProvider>
+  );
+}
+
+export default function RootLayout() {
+  return (
+    <AppServicesProvider
+      renderBoot={(state) => (
+        <BootScreen error={state.status === 'error' ? state.error : undefined} />
+      )}
+    >
+      <Navigation />
+    </AppServicesProvider>
+  );
+}

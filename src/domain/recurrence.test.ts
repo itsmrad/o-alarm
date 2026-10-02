@@ -3,6 +3,7 @@ import {
   clearOneOffOverride,
   computeNextFire,
   nextAlarmOccurrence,
+  nextDateForTime,
   occurrenceKey,
   pruneTransientState,
   setOneOffOverride,
@@ -243,5 +244,14 @@ describe('occurrence keys and multi-alarm', () => {
       '2026-10-12',
       '2026-10-14',
     ]);
+  });
+});
+
+describe('nextDateForTime', () => {
+  it('picks today when the time is ahead, tomorrow otherwise', () => {
+    const now = at('2026-10-02T12:00:00Z'); // 08:00 EDT
+    expect(nextDateForTime(9, 0, now, NY)).toBe('2026-10-02');
+    expect(nextDateForTime(8, 0, now, NY)).toBe('2026-10-03');
+    expect(nextDateForTime(7, 0, now, NY)).toBe('2026-10-03');
   });
 });
