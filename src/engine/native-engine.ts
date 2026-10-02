@@ -3,12 +3,16 @@ import type { AlarmEngineNativeModule } from '@modules/alarm-engine';
 import type {
   AlarmEngine,
   AlarmScheduleSpec,
+  DismissOptions,
+  DismissResult,
   EngineEventMap,
   EngineEventType,
   EngineReadiness,
   EngineSubscription,
   PermissionKind,
+  ObservedEngineEvent,
   PermissionStatus,
+  RingingState,
   ScheduledAlarm,
 } from './types';
 import { AlarmEngineError } from './types';
@@ -60,6 +64,26 @@ export class NativeAlarmEngine implements AlarmEngine {
 
   previewAlarm(spec: AlarmScheduleSpec): Promise<void> {
     return this.call(() => this.native.previewAlarm(spec));
+  }
+
+  getActiveRinging(): Promise<RingingState | null> {
+    return this.call(() => this.native.getActiveRinging());
+  }
+
+  snooze(scheduleId: string): Promise<ScheduledAlarm> {
+    return this.call(() => this.native.snooze(scheduleId));
+  }
+
+  dismiss(scheduleId: string, options: DismissOptions): Promise<DismissResult> {
+    return this.call(() => this.native.dismiss(scheduleId, options));
+  }
+
+  drainObservedEvents(): Promise<ObservedEngineEvent[]> {
+    return this.call(() => this.native.drainObservedEvents());
+  }
+
+  ackObservedEvents(ids: string[]): Promise<void> {
+    return this.call(() => this.native.ackObservedEvents(ids));
   }
 
   addListener<K extends EngineEventType>(

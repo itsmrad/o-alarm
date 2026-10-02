@@ -1,9 +1,13 @@
 import type {
   AlarmEngineEventPayload,
   AlarmScheduleSpec,
+  DismissOptions,
+  DismissResult,
   EngineReadiness,
+  ObservedEngineEvent,
   PermissionKind,
   PermissionStatus,
+  RingingState,
   ScheduledAlarm,
   StopEventPayload,
 } from '@modules/alarm-engine';
@@ -11,12 +15,17 @@ import type {
 export type {
   AlarmEngineEventPayload,
   AlarmScheduleSpec,
+  DismissOptions,
+  DismissResult,
   EngineReadiness,
+  ObservedEngineEvent,
+  ObservedEngineEventType,
   PermissionKind,
   PermissionStatus,
   ReadinessItem,
   ReadinessKind,
   ReadinessStatus,
+  RingingState,
   ScheduleKind,
   ScheduledAlarm,
   StopEventPayload,
@@ -53,8 +62,29 @@ export interface AlarmEngine {
   getScheduled(): Promise<ScheduledAlarm[]>;
   getReadiness(): Promise<EngineReadiness>;
   requestPermission(kind: PermissionKind): Promise<PermissionStatus>;
-  /** Ring a test alarm now (preview engine: emits an in-app `trigger` only). */
+  /** Ring a test alarm now (preview engine: in-app ring only, no sound). */
   previewAlarm(spec: AlarmScheduleSpec): Promise<void>;
+
+  /** The alarm ringing right now, if any — for cold start / relaunch while ringing. */
+  getActiveRinging(): Promise<RingingState | null>;
+  /**
+   * Stop sound/vibration and atomically schedule the snooze re-trigger (D13). The domain
+   * enforces snooze limits first; the engine also rejects `SNOOZE_LIMIT` (defense in depth).
+   * Rejects `NOT_RINGING` if `scheduleId` is not the ringing alarm.
+   */
+  snooze(scheduleId: string): Promise<ScheduledAlarm>;
+  /**
+   * Stop ringing. With `wakeCheckAt`, atomically schedule a `wake_check` alarm (D13).
+   * Rejects `NOT_RINGING` if `scheduleId` is not the ringing alarm.
+   */
+  dismiss(scheduleId: string, options: DismissOptions): Promise<DismissResult>;
+  /**
+   * Events recorded by the engine while JS may not have run. Returns the same events
+   * until they are acknowledged, so a crash between drain and persist loses nothing.
+   */
+  drainObservedEvents(): Promise<ObservedEngineEvent[]>;
+  /** Forget acknowledged events. Unknown ids are ignored (idempotent). */
+  ackObservedEvents(ids: string[]): Promise<void>;
   addListener<K extends EngineEventType>(
     type: K,
     listener: (event: EngineEventMap[K]) => void,
@@ -62,13 +92,21 @@ export interface AlarmEngine {
 }
 
 export type AlarmEngineErrorCode =
-  'NOT_IMPLEMENTED' | 'PERMISSION_DENIED' | 'INVALID_SPEC' | 'SCHEDULE_FAILED' | 'UNKNOWN';
+  | 'NOT_IMPLEMENTED'
+  | 'PERMISSION_DENIED'
+  | 'INVALID_SPEC'
+  | 'SCHEDULE_FAILED'
+  | 'SNOOZE_LIMIT'
+  | 'NOT_RINGING'
+  | 'UNKNOWN';
 
 const KNOWN_CODES: readonly AlarmEngineErrorCode[] = [
   'NOT_IMPLEMENTED',
   'PERMISSION_DENIED',
   'INVALID_SPEC',
   'SCHEDULE_FAILED',
+  'SNOOZE_LIMIT',
+  'NOT_RINGING',
 ];
 
 export class AlarmEngineError extends Error {
