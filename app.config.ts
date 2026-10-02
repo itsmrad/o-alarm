@@ -54,6 +54,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
         motionPermission: 'O-Alarm uses motion to confirm you are up and moving.',
       },
     ],
+    // D4/D5: native alarm engine (AlarmKit usage string, App Intents; Android via module manifest).
+    './modules/alarm-engine/app.plugin.js',
     // D5: Android minSdk 26.
     ['expo-build-properties', { android: { minSdkVersion: 26 } }],
   ],
