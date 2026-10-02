@@ -40,6 +40,20 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
         dark: { backgroundColor: '#0E1013' },
       },
     ],
+    [
+      'expo-camera',
+      {
+        cameraPermission: 'O-Alarm uses the camera to scan your wake-up QR or barcode.',
+        microphonePermission: false,
+        recordAudioAndroid: false,
+      },
+    ],
+    [
+      'expo-sensors',
+      {
+        motionPermission: 'O-Alarm uses motion to confirm you are up and moving.',
+      },
+    ],
     // D5: Android minSdk 26.
     ['expo-build-properties', { android: { minSdkVersion: 26 } }],
   ],
