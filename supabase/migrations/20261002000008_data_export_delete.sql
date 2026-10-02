@@ -31,13 +31,13 @@ declare
   uid  text := auth.jwt()->>'sub';
   t    text;
   rows jsonb;
-  tables jsonb := '{}';
+  tables jsonb := '{}'::jsonb;
 begin
   if uid is null then
     raise exception 'not authenticated' using errcode = '28000';
   end if;
 
-  foreach t in array public.user_data_tables() loop
+  for t in select unnest(public.user_data_tables()) loop
     execute format(
       'select coalesce(jsonb_agg(to_jsonb(x) order by x.created_at), ''[]'') from public.%I x where x.user_id = $1', t)
       into rows using uid;
@@ -65,13 +65,13 @@ declare
   uid    text := auth.jwt()->>'sub';
   t      text;
   n      bigint;
-  counts jsonb := '{}';
+  counts jsonb := '{}'::jsonb;
 begin
   if uid is null then
     raise exception 'not authenticated' using errcode = '28000';
   end if;
 
-  foreach t in array public.user_data_tables() loop
+  for t in select unnest(public.user_data_tables()) loop
     execute format('select count(*) from public.%I where user_id = $1', t) into n using uid;
     counts := counts || jsonb_build_object(t, n);
   end loop;
