@@ -50,3 +50,10 @@ src/lib/                  analytics, sentry, sync, auth glue
 modules/alarm-engine/     Expo native module (ios/ Swift AlarmKit, android/ Kotlin)
 supabase/                 migrations, functions
 ```
+
+## Addenda
+
+| # | Decision |
+|---|---|
+| D22 | **Pro gating of cloud sync is enforced server-side on writes** (RLS `WITH CHECK` via a `has_entitlement('pro')` helper reading the service-role-managed `entitlements` table) — implemented with the sync task. Reads, `export_my_data()` and `delete_my_data()` stay allowed for every signed-in user, so a lapsed subscriber never loses access to their own data. Guest→account migration upload is allowed once regardless of tier (local history stays on device either way). |
+| D23 | `alarm_schedules` is folded into `alarms` (recurrence lives on the alarm row; occurrences are separate) — accepted from the cloud-schema worker. |
