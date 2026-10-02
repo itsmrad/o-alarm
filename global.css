@@ -1,0 +1,39 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Semantic color tokens (RGB channels so Tailwind opacity modifiers work).
+ * Keep in sync with src/theme/tokens.ts — enforced by src/theme/tokens.test.ts.
+ */
+:root {
+  --color-background: 247 247 245;
+  --color-surface: 255 255 255;
+  --color-surface-muted: 238 238 235;
+  --color-foreground: 17 19 21;
+  --color-foreground-muted: 84 89 97;
+  --color-border: 216 217 212;
+  --color-accent: 44 82 199;
+  --color-accent-foreground: 255 255 255;
+  --color-danger: 190 38 38;
+  --color-success: 26 122 76;
+  --color-warning: 255 244 219;
+  --color-warning-foreground: 102 59 0;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-background: 14 16 19;
+    --color-surface: 23 26 31;
+    --color-surface-muted: 34 38 45;
+    --color-foreground: 242 243 245;
+    --color-foreground-muted: 163 169 179;
+    --color-border: 44 49 58;
+    --color-accent: 143 168 255;
+    --color-accent-foreground: 14 16 19;
+    --color-danger: 255 120 120;
+    --color-success: 92 205 150;
+    --color-warning: 58 42 10;
+    --color-warning-foreground: 245 207 133;
+  }
+}
