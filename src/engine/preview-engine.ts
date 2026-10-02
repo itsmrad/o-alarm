@@ -23,6 +23,12 @@ export const PREVIEW_MODE_MESSAGE =
 
 type Listeners = { [K in EngineEventType]: Set<(event: EngineEventMap[K]) => void> };
 
+/** Snooze/wake-check follow-ups are instant-only: they never carry a wall-clock rule (D28). */
+function instantOnly(spec: AlarmScheduleSpec): AlarmScheduleSpec {
+  const { wallClock: _wallClock, ...rest } = spec;
+  return rest;
+}
+
 /** Longest single timer; re-checked after, so long waits never drift or trip RN warnings. */
 const MAX_TIMER_MS = 60_000;
 
@@ -141,7 +147,7 @@ export class PreviewAlarmEngine implements AlarmEngine {
     }
     const fireAt = new Date(this.clock().getTime() + spec.snooze.durationMin * 60_000);
     const entry = this.store({
-      ...spec,
+      ...instantOnly(spec),
       id: snoozeScheduleId(state.occurrenceKey, used + 1),
       kind: 'snooze',
       fireAt: fireAt.toISOString(),
@@ -161,7 +167,7 @@ export class PreviewAlarmEngine implements AlarmEngine {
       // Validate + store before clearing the ring, so a bad wakeCheckAt leaves it ringing.
       const attempt = (this.wakeCheckAttempts.get(state.occurrenceKey) ?? 0) + 1;
       wakeCheck = this.store({
-        ...spec,
+        ...instantOnly(spec),
         id: wakeCheckScheduleId(state.occurrenceKey, attempt),
         kind: 'wake_check',
         fireAt: options.wakeCheckAt,
