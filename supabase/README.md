@@ -150,7 +150,7 @@ No secrets in git (D21).
 | Edge Functions secrets | `REVENUECAT_WEBHOOK_AUTH` | Shared secret. Must equal the **Authorization header value** configured on the RevenueCat webhook (e.g. `Bearer <long random string>`). Unset => the webhook rejects everything (fail closed). |
 | Edge Functions secrets | `REVENUECAT_SECRET_API_KEY` | RevenueCat **secret** API key (v1, `sk_…`). Used for `TRANSFER` reconciliation and subscriber deletion. Unset => transfers are skipped and deletion reports `skipped` (it does not fail). |
 | Edge Functions secrets | `OPENROUTER_API_KEY` | OpenRouter key for `ai-insights`. Unset => the function answers `fallback: not_configured` and the app shows deterministic insights only. |
-| Edge Functions secrets | `OPENROUTER_MODEL` (optional) | OpenRouter model id for `ai-insights`; default `anthropic/claude-opus-5.5`. |
+| Edge Functions secrets | `OPENROUTER_MODEL` (optional) | OpenRouter model id for `ai-insights`; default `anthropic/claude-sonnet-5.5`. |
 | Edge Functions secrets | `CLERK_SECRET_KEY` | Later change (server-side Clerk deletion). |
 | App (`EXPO_PUBLIC_*`, publishable) | `EXPO_PUBLIC_REVENUECAT_IOS_KEY`, `EXPO_PUBLIC_REVENUECAT_ANDROID_KEY` | RevenueCat public SDK keys. Empty => preview mode (no store). |
 | App (`EXPO_PUBLIC_*`, publishable) | `EXPO_PUBLIC_TERMS_URL`, `EXPO_PUBLIC_PRIVACY_URL` | Paywall legal links (terms default to Apple's standard EULA; privacy is hidden until set). |

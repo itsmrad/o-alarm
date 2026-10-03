@@ -288,7 +288,7 @@ export function buildUserMessage(request: AiRequest): string {
 
 // ------------------------------------------------------------------------------------- OpenRouter
 
-export const DEFAULT_OPENROUTER_MODEL = 'anthropic/claude-opus-5.5';
+export const DEFAULT_OPENROUTER_MODEL = 'anthropic/claude-sonnet-5.5';
 export const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
 export type Completer = (request: AiRequest, signal: AbortSignal) => Promise<string>;

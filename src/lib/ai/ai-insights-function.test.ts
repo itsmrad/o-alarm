@@ -376,7 +376,7 @@ describe('OpenRouter completer (mocked)', () => {
     expect(url).toBe(OPENROUTER_URL);
     expect((init!.headers as Record<string, string>).authorization).toBe('Bearer sk-or-test');
     const body = JSON.parse(init!.body as string);
-    expect(body.model).toBe('anthropic/claude-opus-5.5');
+    expect(body.model).toBe('anthropic/claude-sonnet-5.5');
     expect(body.response_format.json_schema.strict).toBe(true);
     expect(body.provider).toEqual({ data_collection: 'deny', require_parameters: true });
     expect(body.messages).toHaveLength(2);
