@@ -16,6 +16,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     // (expo-build-properties' ios.deploymentTarget is deprecated).
     deploymentTarget: '26',
     supportsTablet: false,
+    usesAppleSignIn: true,
   },
   android: {
     package: 'com.oalarm.app',
@@ -54,6 +55,10 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
         motionPermission: 'O-Alarm uses motion to confirm you are up and moving.',
       },
     ],
+    // Bedtime / wind-down / check-in reminders only. Alarms never use notifications on iOS (D4).
+    'expo-notifications',
+    'expo-secure-store',
+    'expo-apple-authentication',
     // D5: Android minSdk 26.
     ['expo-build-properties', { android: { minSdkVersion: 26 } }],
   ],
