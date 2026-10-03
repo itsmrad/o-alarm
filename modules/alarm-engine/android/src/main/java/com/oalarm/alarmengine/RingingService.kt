@@ -25,7 +25,6 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.util.Log
-import java.io.File
 
 /** Starts/stops [RingingService]; the service reads what to ring from the engine. */
 class ServiceRinger(private val context: Context) : Ringer {
@@ -187,19 +186,10 @@ class RingingService : Service() {
   }
 
   private fun soundUri(sound: AlarmSound): Uri? = when (sound.kind) {
-    "custom" -> sound.id?.let { customSoundUri(it) }
+    "custom" -> sound.id?.let { CustomSounds.uri(this, it) }
     "system" -> sound.id?.let { Uri.parse(it) }
     else -> null
   } ?: defaultAlarmUri()
-
-  /** A custom sound is a bundled raw resource name (with or without extension), a file path or a URI. */
-  private fun customSoundUri(id: String): Uri? {
-    val name = id.substringBeforeLast('.').lowercase().replace(Regex("[^a-z0-9_]"), "_")
-    val res = resources.getIdentifier(name, "raw", packageName)
-    if (res != 0) return Uri.parse("android.resource://$packageName/$res")
-    if (id.startsWith("/")) return File(id).takeIf { it.exists() }?.let { Uri.fromFile(it) }
-    return if (id.contains("://")) Uri.parse(id) else null
-  }
 
   private fun defaultAlarmUri(): Uri? =
     RingtoneManager.getActualDefaultRingtoneUri(this, RingtoneManager.TYPE_ALARM)
