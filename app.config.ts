@@ -4,7 +4,12 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
   name: 'O-Alarm',
   slug: 'o-alarm',
+  owner: 'itsmrad',
   scheme: 'oalarm',
+  extra: {
+    ...config.extra,
+    eas: { projectId: '6f6670a1-b026-47a5-9a28-0096e4519199' },
+  },
   version: '0.1.0',
   orientation: 'portrait',
   icon: './assets/icon.png',
