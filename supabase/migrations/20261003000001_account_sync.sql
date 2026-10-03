@@ -37,9 +37,9 @@ alter table public.alarms
   alter column snooze_limit set not null,
   add constraint alarms_snooze_limit_check check (snooze_limit between 0 and 10);
 
--- `sound` encodes the local {kind, id} object as 'default' | 'system:<id>' | 'custom:<id>'.
+-- `sound` encodes the local {kind, id} object as '<kind>' (id null) or '<kind>:<id>'.
 alter table public.alarms add constraint alarms_sound_format
-  check (sound is null or sound = 'default' or sound ~ '^(system|custom):.+$');
+  check (sound is null or sound ~ '^(default|system|custom)(:.+)?$');
 
 -- A "mission" Wake Check needs its mission (same rule as the local schema).
 alter table public.alarms add constraint alarms_wake_check_mission_needs_id
