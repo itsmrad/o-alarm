@@ -20,10 +20,14 @@ export function getSleepService(): Promise<SleepService> {
   if (!instance) {
     const pending = (async () => {
       const db = await openAppDatabase();
-      // Wait for a concurrent alarm write instead of failing with SQLITE_BUSY.
-      (db as unknown as { $client?: { execSync(sql: string): void } }).$client?.execSync(
-        'PRAGMA busy_timeout = 3000;',
-      );
+      // Best effort: wait for a concurrent alarm write instead of failing with SQLITE_BUSY.
+      try {
+        (db as unknown as { $client?: { execSync?: (sql: string) => void } }).$client?.execSync?.(
+          'PRAGMA busy_timeout = 3000;',
+        );
+      } catch {
+        // Not fatal: the default behavior still works.
+      }
       const deviceId = getOrCreateDeviceId(db, Crypto.randomUUID, Platform.OS, new Date());
       return createSleepService({ db, deviceId });
     })();
