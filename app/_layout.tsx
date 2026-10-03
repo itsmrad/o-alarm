@@ -11,6 +11,7 @@ import { SleepReminderSync } from '@/features/sleep';
 import { AppServicesProvider } from '@/lib/app-services';
 import { AccountProviders } from '@/lib/auth';
 import { AppErrorBoundary, ObservabilityRoot, initSentry } from '@/lib/observability';
+import { PurchasesProvider } from '@/lib/purchases';
 import { useThemeColors } from '@/theme/tokens';
 
 SplashScreen.preventAutoHideAsync().catch(() => undefined);
@@ -89,9 +90,11 @@ export default function RootLayout() {
         )}
       >
         <AccountProviders>
-          <SleepReminderSync />
-          <ObservabilityRoot />
-          <Navigation />
+          <PurchasesProvider>
+            <SleepReminderSync />
+            <ObservabilityRoot />
+            <Navigation />
+          </PurchasesProvider>
         </AccountProviders>
       </AppServicesProvider>
     </AppErrorBoundary>

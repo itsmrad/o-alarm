@@ -93,7 +93,18 @@ const ALARM_FIELDS = [
   'important',
   'missionBeforeSnooze',
 ];
-export const PAYWALL_SOURCES = ['settings', 'missions', 'wake_check', 'insights', 'other'] as const;
+/** The paywall's `reason` values (src/features/paywall/copy.ts) plus `other`. */
+export const PAYWALL_SOURCES = [
+  'advanced-missions',
+  'qr-mission',
+  'mission-chains',
+  'wake-check',
+  'insights',
+  'ai',
+  'sync',
+  'settings',
+  'other',
+] as const;
 export const PURCHASE_PLANS = ['monthly', 'annual'] as const;
 
 const known = (allowed: readonly string[], raw: unknown) =>

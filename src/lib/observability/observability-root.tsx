@@ -2,20 +2,29 @@ import { useEffect, useRef } from 'react';
 
 import { useAppServices } from '@/lib/app-services';
 import { getEntitlementSnapshot } from '@/lib/entitlements';
+import { useOptionalPurchases } from '@/lib/purchases';
 import { PREFERENCE_KEYS, readPreference, useSync } from '@/lib/sync';
 
 import { initAnalytics } from './analytics';
 import { createObservabilityBridge } from './bridge';
+import { instrumentPurchases, usePaywallViewTracking } from './paywall-tracking';
 import { captureIssue } from './sentry';
 
 /**
- * Mount once under AppServicesProvider + AccountProviders. Starts analytics with the
- * stored opt-out, tails the event log (bridge) and reports sync failures. Renders nothing.
+ * Mount once under AppServicesProvider + AccountProviders + PurchasesProvider. Starts
+ * analytics with the stored opt-out, tails the event log (bridge), reports sync failures and
+ * tracks the paywall funnel. Renders nothing.
  */
 export function ObservabilityRoot(): null {
   const { db, deviceId, alarms, ring } = useAppServices();
   const { status } = useSync();
+  const purchases = useOptionalPurchases();
   const reportedFailures = useRef(0);
+  usePaywallViewTracking();
+
+  useEffect(() => {
+    if (purchases) instrumentPurchases(purchases);
+  }, [purchases]);
 
   useEffect(() => {
     const tier = () => getEntitlementSnapshot().tier;

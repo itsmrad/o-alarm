@@ -40,12 +40,17 @@ describe('wake_checks: one row per occurrence (migration 0002)', () => {
     );
     expect(rows).toEqual([{ id: 'id-2', version: 2, status: 'pending_verification' }]);
     expect(repo.session(entry.occurrenceKey)).toMatchObject({ alarmId: 'a1' });
-    expect(() =>
+    let error: unknown;
+    try {
       db.run(
         sql`insert into wake_checks (id, created_at, updated_at, device_id, wake_session_id, occurrence_key, attempt, status, state)
             values ('dup', 'x', 'x', 'd1', 's', 'a1@2026-10-02', 1, 'armed', '{}')`,
-      ),
-    ).toThrow(/UNIQUE/);
+      );
+    } catch (caught) {
+      error = caught;
+    }
+    // Drizzle wraps the SQLite error; the constraint is on the cause.
+    expect(String((error as { cause?: unknown } | undefined)?.cause ?? error)).toMatch(/UNIQUE/);
     close();
   });
 

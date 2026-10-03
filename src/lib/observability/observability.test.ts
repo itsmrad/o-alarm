@@ -49,7 +49,11 @@ afterEach(() => {
 
 describe('no keys → no-op', () => {
   it('reads no keys and the default host', () => {
-    expect(NO_KEYS).toEqual({ sentryDsn: null, posthogKey: null, posthogHost: DEFAULT_POSTHOG_HOST });
+    expect(NO_KEYS).toEqual({
+      sentryDsn: null,
+      posthogKey: null,
+      posthogHost: DEFAULT_POSTHOG_HOST,
+    });
     expect(readObservabilityConfig({ EXPO_PUBLIC_SENTRY_DSN: '  ' }).sentryDsn).toBeNull();
   });
 
@@ -307,7 +311,14 @@ describe('event mapper (property test)', () => {
       'alarm_snoozed',
     ];
     for (const type of EVENT_TYPES) {
-      const event = { id: 'e', type, occurredAt: '', alarmId: null, occurrenceKey: null, payload: {} };
+      const event = {
+        id: 'e',
+        type,
+        occurredAt: '',
+        alarmId: null,
+        occurrenceKey: null,
+        payload: {},
+      };
       const result = toProductEvent(event as unknown as AppEvent, { tier: 'free', alarm: null });
       expect(result === null).toBe(!productTypes.includes(type));
     }
@@ -404,7 +415,11 @@ describe('observability bridge', () => {
     t.bridge.flush();
     t.bridge.flush(); // idempotent: the cursor moved
     expect(t.captured.map((c) => c.name)).toEqual(['alarm_created']);
-    expect(t.captured[0]!.properties).toMatchObject({ tier: 'free', recurring: true, repeat_days: 5 });
+    expect(t.captured[0]!.properties).toMatchObject({
+      tier: 'free',
+      recurring: true,
+      repeat_days: 5,
+    });
     expect(JSON.stringify(t.captured)).not.toContain('Gym');
     expect(alarm.label).toBe('Gym');
     t.close();
