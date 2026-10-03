@@ -6,6 +6,7 @@ import * as Crypto from 'expo-crypto';
 import { createAlarmService, type AlarmService } from '@/db/alarm-service';
 import { openAppDatabase } from '@/db/client';
 import { getOrCreateDeviceId } from '@/db/repositories/device';
+import type { AppDatabase } from '@/db/types';
 import { resolveEngine, type AlarmEngine } from '@/engine';
 import { createReliabilityLedger, type ReliabilityLedger } from '@/services/reliability-ledger';
 import { createRingLifecycle, type RingLifecycle } from '@/services/ring-lifecycle';
@@ -16,6 +17,8 @@ export interface AppServices {
   ledger: ReliabilityLedger;
   /** Ring/reconcile lifecycle; also the snooze/dismiss/mission hook point. */
   ring: RingLifecycle;
+  db: AppDatabase;
+  deviceId: string;
 }
 
 type BootState =
@@ -43,7 +46,7 @@ async function boot(): Promise<AppServices> {
     showRinging: (event) =>
       router.push({ pathname: '/ringing', params: { scheduleId: event.scheduleId } }),
   });
-  return { engine, alarms, ledger, ring };
+  return { engine, alarms, ledger, ring, db, deviceId };
 }
 
 /**
