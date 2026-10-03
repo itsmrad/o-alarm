@@ -350,6 +350,7 @@ actor AlarmEngineCore {
       record("snoozed", spec)
       try? persist()
       AlarmEngineEvents.shared.emit("onSnooze", payload(spec, scheduleId: scheduleId))
+      promoteAlerting()
       return entry
     }
   }
@@ -378,6 +379,7 @@ actor AlarmEngineCore {
       record("dismissed", spec, detail: missionCompleted ? nil : "mission_not_completed")
       try? persist()
       AlarmEngineEvents.shared.emit("onDismiss", payload(spec, scheduleId: scheduleId))
+      promoteAlerting()
       return wakeCheck
     }
   }
@@ -433,6 +435,7 @@ actor AlarmEngineCore {
       var stop = payload(spec, scheduleId: spec.id)
       stop.missionCompleted = !needsMission
       AlarmEngineEvents.shared.emit("onStop", stop)
+      promoteAlerting()
     }
   }
 
@@ -482,6 +485,7 @@ actor AlarmEngineCore {
         clearRinging(occurrenceKey: spec.occurrenceKey)
         try? persist()
         AlarmEngineEvents.shared.emit("onSnooze", payload(spec, scheduleId: spec.id))
+        promoteAlerting()
       } else {
         // The limit was reached after this alert was armed: never silence, ring again shortly.
         markHandled(alarmID, reason: "snooze_limit")
@@ -659,6 +663,20 @@ actor AlarmEngineCore {
     guard state.triggered[alarmUUID] == nil else { return }
     state.triggered[alarmUUID] = EngineTime.iso(Date())
     record("trigger_received", spec)
+  }
+
+  /// Two alarms at once: when the recorded ring ends while another of ours is still alerting,
+  /// that one becomes the ringing record so JS routes to it next.
+  private func promoteAlerting() {
+    guard state.ringing == nil else { return }
+    for uuid in alertingIds() where !wasHandled(uuid.uuidString) {
+      guard let spec = lookupSpec(alarmUUID: uuid) else { continue }
+      if ensureRinging(spec, alarmUUID: uuid.uuidString) {
+        try? persist()
+        AlarmEngineEvents.shared.emit("onTrigger", payload(spec, scheduleId: spec.id))
+      }
+      return
+    }
   }
 
   private func clearRinging(occurrenceKey: String) {

@@ -260,6 +260,9 @@ ios/
   and the app never runs, the chain ends after two days.
 - **Snooze, wake check and retrigger are real AlarmKit alarms (D13).** They ring with the app
   killed.
+- **Before the first unlock after a reboot** the mirror is unreadable. Alarms still ring,
+  but a Stop on a mission alarm can't arm its retrigger, and no recurrence is re-armed until
+  the device is unlocked.
 - **AlarmKit doesn't expose when a missed alarm (device off) would have fired.** Only
   zone recomputation reports `missed`.
 
