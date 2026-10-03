@@ -1,4 +1,4 @@
-import { and, desc, eq, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, sql, type SQL } from 'drizzle-orm';
 
 import type { AppEvent, EventType, NewEvent } from '@/domain';
 
@@ -80,6 +80,36 @@ export function createEventsRepository(db: AppDatabase, newId: () => string) {
         .limit(filter.limit ?? 100)
         .all()
         .map(rowToEvent);
+    },
+
+    /**
+     * Events written on this device after insertion position `afterRowId`, oldest first
+     * (SQLite rowid: monotonic insertion order, so equal timestamps never reorder). For
+     * consumers that tail the log (analytics/observability).
+     */
+    listAfter(
+      afterRowId: number,
+      deviceId: string,
+      limit = 200,
+    ): { rowId: number; event: AppEvent }[] {
+      return db
+        .select({ rowId: sql<number>`rowid`, row: events })
+        .from(events)
+        .where(and(gt(sql`rowid`, afterRowId), eq(events.deviceId, deviceId)))
+        .orderBy(asc(sql`rowid`))
+        .limit(limit)
+        .all()
+        .map(({ rowId, row }) => ({ rowId, event: rowToEvent(row) }));
+    },
+
+    /** Insertion position of the newest event (0 when empty). */
+    lastRowId(): number {
+      return (
+        db
+          .select({ rowId: sql<number>`max(rowid)` })
+          .from(events)
+          .get()?.rowId ?? 0
+      );
     },
   };
 }

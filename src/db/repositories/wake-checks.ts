@@ -1,4 +1,4 @@
-import { desc, eq, inArray } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 
 import type { WakeCheckState } from '@/domain';
 
@@ -9,7 +9,7 @@ export type WakeCheckRow = typeof wakeChecks.$inferSelect;
 export type WakeSessionRow = typeof wakeSessions.$inferSelect;
 
 /**
- * Wake Check persistence (D13): one `wake_checks` row per occurrence holding the current
+ * Wake Check persistence (D13): one `wake_checks` row per occurrence (unique index) holding the current
  * reducer state, plus the `wake_sessions` row it belongs to. Survives app kill, so the
  * flow resumes from here + the engine's observed events.
  */
@@ -19,12 +19,7 @@ export function createWakeChecksRepository(db: AppDatabase, newId: () => string)
     null;
 
   const get = (occurrenceKey: string): WakeCheckRow | null =>
-    db
-      .select()
-      .from(wakeChecks)
-      .where(eq(wakeChecks.occurrenceKey, occurrenceKey))
-      .orderBy(desc(wakeChecks.updatedAt))
-      .get() ?? null;
+    db.select().from(wakeChecks).where(eq(wakeChecks.occurrenceKey, occurrenceKey)).get() ?? null;
 
   function ensureSession(
     entry: { alarmId: string; occurrenceKey: string; startedAt: string },
@@ -63,33 +58,33 @@ export function createWakeChecksRepository(db: AppDatabase, newId: () => string)
         status: entry.state.status,
         state: entry.state,
       };
-      if (existing) {
-        if (JSON.stringify(existing.state) === JSON.stringify(entry.state)) return;
-        db.update(wakeChecks)
-          .set({
-            ...fields,
-            updatedAt: now,
-            version: existing.version + 1,
-            deviceId: ctx.deviceId,
-          })
-          .where(eq(wakeChecks.id, existing.id))
-          .run();
-        return;
-      }
-      const wakeSession = ensureSession(
-        { alarmId: entry.alarmId, occurrenceKey: entry.occurrenceKey, startedAt: now },
-        ctx,
-      );
+      if (existing && JSON.stringify(existing.state) === JSON.stringify(entry.state)) return;
+      const wakeSessionId =
+        existing?.wakeSessionId ??
+        ensureSession(
+          { alarmId: entry.alarmId, occurrenceKey: entry.occurrenceKey, startedAt: now },
+          ctx,
+        ).id;
+      // Upsert on the unique occurrence_key index (migration 0002): one row per occurrence.
       db.insert(wakeChecks)
         .values({
           id: newId(),
-          wakeSessionId: wakeSession.id,
+          wakeSessionId,
           occurrenceKey: entry.occurrenceKey,
           ...fields,
           createdAt: now,
           updatedAt: now,
           version: 1,
           deviceId: ctx.deviceId,
+        })
+        .onConflictDoUpdate({
+          target: wakeChecks.occurrenceKey,
+          set: {
+            ...fields,
+            updatedAt: now,
+            version: sql`${wakeChecks.version} + 1`,
+            deviceId: ctx.deviceId,
+          },
         })
         .run();
     },
