@@ -7,7 +7,9 @@ import { useEffect } from 'react';
 import { Text, View } from 'react-native';
 import { DarkTheme, DefaultTheme, ThemeProvider } from 'expo-router/react-navigation';
 
+import { SleepReminderSync } from '@/features/sleep';
 import { AppServicesProvider } from '@/lib/app-services';
+import { AccountProviders } from '@/lib/auth';
 import { useThemeColors } from '@/theme/tokens';
 
 SplashScreen.preventAutoHideAsync().catch(() => undefined);
@@ -65,9 +67,11 @@ function Navigation() {
         />
         <Stack.Screen
           name="wake-check"
-          options={{ presentation: 'fullScreenModal', title: 'Wake Check' }}
+          options={{ presentation: 'fullScreenModal', headerShown: false, gestureEnabled: false }}
         />
         <Stack.Screen name="paywall" options={{ presentation: 'modal', title: 'O-Alarm Pro' }} />
+        <Stack.Screen name="checkin" options={{ presentation: 'modal', title: 'Good morning' }} />
+        <Stack.Screen name="sign-in" options={{ presentation: 'modal', title: 'Sign in' }} />
       </Stack>
     </ThemeProvider>
   );
@@ -80,7 +84,10 @@ export default function RootLayout() {
         <BootScreen error={state.status === 'error' ? state.error : undefined} />
       )}
     >
-      <Navigation />
+      <AccountProviders>
+        <SleepReminderSync />
+        <Navigation />
+      </AccountProviders>
     </AppServicesProvider>
   );
 }

@@ -56,6 +56,36 @@ describe('detectWeakening', () => {
     ]);
   });
 
+  it('flags turning off or easing Wake Check', () => {
+    const wakeCheck = {
+      enabled: true,
+      delayMin: 5,
+      responseWindowSec: 60,
+      method: 'movement' as const,
+      missionId: null,
+      maxRetriggers: 3,
+    };
+    const before = alarm({ wakeCheck });
+    expect(
+      detectWeakening(before, { ...before, wakeCheck: { ...wakeCheck, enabled: false } }, NOW, NY)
+        ?.reasons,
+    ).toEqual(['turns off Wake Check']);
+    for (const eased of [
+      { delayMin: 10 },
+      { responseWindowSec: 120 },
+      { maxRetriggers: 1 },
+      { method: 'confirm' as const },
+    ]) {
+      expect(
+        detectWeakening(before, { ...before, wakeCheck: { ...wakeCheck, ...eased } }, NOW, NY)
+          ?.reasons,
+      ).toEqual(['makes Wake Check easier']);
+    }
+    expect(
+      detectWeakening(before, { ...before, wakeCheck: { ...wakeCheck, delayMin: 3 } }, NOW, NY),
+    ).toBeNull();
+  });
+
   it('allows strengthening changes and edits outside the protection window', () => {
     const before = alarm();
     expect(detectWeakening(before, { ...before, hour: 6 }, NOW, NY)).toBeNull();

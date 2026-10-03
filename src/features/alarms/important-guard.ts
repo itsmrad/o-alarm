@@ -19,6 +19,12 @@ const lenientSnooze = (before: Alarm['snooze'], after: Alarm['snooze']) =>
     after.maxCount > before.maxCount ||
     after.durationMin > before.durationMin);
 
+const lenientWakeCheck = (before: Alarm['wakeCheck'], after: Alarm['wakeCheck']) =>
+  after.delayMin > before.delayMin ||
+  after.responseWindowSec > before.responseWindowSec ||
+  after.maxRetriggers < before.maxRetriggers ||
+  (before.method !== 'confirm' && after.method === 'confirm');
+
 /**
  * Anti-oversleep protection (PRODUCT.md): does changing an imminent important alarm from
  * `before` to `after` (null = delete) make it less likely to wake the user? Pure.
@@ -50,6 +56,9 @@ export function detectWeakening(
       reasons.push('lets you snooze without the mission');
     }
     if (before.wakeCheck.enabled && !after.wakeCheck.enabled) reasons.push('turns off Wake Check');
+    else if (before.wakeCheck.enabled && lenientWakeCheck(before.wakeCheck, after.wakeCheck)) {
+      reasons.push('makes Wake Check easier');
+    }
   }
   return reasons.length ? { nextFire, reasons } : null;
 }

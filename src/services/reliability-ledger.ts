@@ -13,6 +13,7 @@ import type {
   ObservedEngineEventType,
   ScheduleKind,
 } from '@/engine';
+import type { MissionChainEvent } from '@/domain/missions-chain';
 import { stableUuid } from '@/lib/stable-id';
 
 /** A scheduled occurrence with no trigger this long after its time is `missed`. */
@@ -107,7 +108,9 @@ export function createReliabilityLedger(deps: LedgerDeps) {
   }
 
   const ledger = {
+    /** A Wake Check prompt is not an alarm ring: the wake-check service logs it. */
     recordTrigger(ring: RingRef, at: string): boolean {
+      if (ring.kind === 'wake_check') return false;
       return deps.db.transaction(() => {
         const write = ctx();
         const row = occurrenceFor(ring, at, write);
@@ -155,6 +158,7 @@ export function createReliabilityLedger(deps: LedgerDeps) {
       at: string,
       method: EventPayloads['alarm_dismissed']['method'],
     ): boolean {
+      if (ring.kind === 'wake_check') return false;
       return deps.db.transaction(() => {
         const write = ctx();
         const row = occurrenceFor(ring, at, write);
@@ -164,19 +168,25 @@ export function createReliabilityLedger(deps: LedgerDeps) {
       });
     },
 
-    recordRetrigger(ring: RingRef, at: string): boolean {
+    /**
+     * `wakeCheckAttempt`: the Wake Check attempt this re-ring answers (from the wake-check
+     * service); without one, a system-UI stop (D14) or unknown cause is inferred.
+     */
+    recordRetrigger(ring: RingRef, at: string, wakeCheckAttempt?: number | null): boolean {
       return deps.db.transaction(() => {
         const write = ctx();
         const prior = events.list({ occurrenceKey: ring.occurrenceKey, limit: 200 });
         const stoppedFromSystem = prior.some(
           (e) => e.type === 'alarm_dismissed' && e.payload.method === 'system_stop',
         );
+        const fromWakeCheck = wakeCheckAttempt != null || !stoppedFromSystem;
         return appendRing(
           'alarm_retriggered',
           ring,
           {
-            reason: stoppedFromSystem ? 'stop_without_mission' : 'wake_check_failed',
-            attempt: prior.filter((e) => e.type === 'alarm_retriggered').length + 1,
+            reason: fromWakeCheck ? 'wake_check_failed' : 'stop_without_mission',
+            attempt:
+              wakeCheckAttempt ?? prior.filter((e) => e.type === 'alarm_retriggered').length + 1,
           },
           at,
           write,
@@ -184,14 +194,26 @@ export function createReliabilityLedger(deps: LedgerDeps) {
       });
     },
 
-    /** Maps one engine-observed event onto D12 events + the ledger. Idempotent. */
-    recordObserved(raw: ObservedEngineEvent): void {
+    /** Mission chain events (started/completed/failed) for the ringing occurrence. */
+    recordMission(event: MissionChainEvent, ring: Pick<RingRef, 'alarmId' | 'occurrenceKey'>) {
+      if (isTestOccurrence(ring.occurrenceKey)) return;
+      events.append({ ...event, alarmId: ring.alarmId, occurrenceKey: ring.occurrenceKey }, ctx());
+    },
+
+    /**
+     * Maps one engine-observed event onto D12 events + the ledger. Idempotent.
+     * `wakeCheckAttempt`: from the wake-check service, for re-trigger rings.
+     */
+    recordObserved(raw: ObservedEngineEvent, wakeCheckAttempt?: number | null): void {
       const observed = raw as Observed;
       const event = { ...observed, kind: scheduleKindOf(observed.scheduleId) };
       const hasMissions = (deps.getAlarm(event.alarmId)?.missions.length ?? 0) > 0;
       switch (event.type) {
         case 'trigger_received':
           ledger.recordTrigger(event, event.at);
+          if (event.kind === 'retrigger') {
+            ledger.recordRetrigger(event, event.at, wakeCheckAttempt);
+          }
           return;
         case 'snoozed':
           ledger.recordSnooze(event, event.at);
@@ -203,7 +225,7 @@ export function createReliabilityLedger(deps: LedgerDeps) {
           ledger.recordDismiss(event, event.at, 'system_stop');
           return;
         case 'retriggered':
-          ledger.recordRetrigger(event, event.at);
+          ledger.recordRetrigger(event, event.at, wakeCheckAttempt);
           return;
         case 'missed':
           deps.db.transaction(() => {
