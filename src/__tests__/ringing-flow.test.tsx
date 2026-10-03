@@ -94,7 +94,9 @@ describe('ringing flow (Expo Go preview engine)', () => {
 
     // Press-and-hold stops it.
     await act(async () => hold('Hold to stop'));
-    await waitFor(() => expect(app.getPathname()).toBe('/'));
+    // Final wake-up on a morning: the sleep feature's check-in is offered once the
+    // alarm screen has closed.
+    await waitFor(() => expect(app.getPathname()).toBe('/checkin'));
     expect(await mockEngine!.getActiveRinging()).toBeNull();
 
     // Ledger + D12 events: expected, two triggers, one snooze, one dismissal.

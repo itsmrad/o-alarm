@@ -19,8 +19,13 @@ import {
   type Alarm,
   type AlarmSound,
   type Occurrence,
+  type WakeCheckConfig,
   type Weekday,
 } from '@/domain';
+import type { MissionStep } from '@/domain/missions';
+import { useMissionEntitlement } from '@/features/missions/entitlement';
+import { MissionChainEditor } from '@/features/missions/mission-chain-editor';
+import { WakeCheckEditor } from '@/features/wakecheck/wake-check-editor';
 import { useAppServices, useNow } from '@/lib/app-services';
 import { useThemeColors } from '@/theme/tokens';
 
@@ -78,7 +83,10 @@ export function AlarmEditor({ alarmId }: { alarmId?: string }) {
   const [snoozeLimit, setSnoozeLimit] = useState<SnoozeLimit>(
     pick(SNOOZE_LIMITS, base.snooze.maxCount, 3),
   );
+  const [missions, setMissions] = useState<MissionStep[]>(base.missions);
   const [missionBeforeSnooze, setMissionBeforeSnooze] = useState(base.missionBeforeSnooze);
+  const [wakeCheck, setWakeCheck] = useState<WakeCheckConfig>(base.wakeCheck);
+  const entitlement = useMissionEntitlement();
   const [important, setImportant] = useState(base.important);
   const [saving, setSaving] = useState(false);
 
@@ -106,8 +114,9 @@ export function AlarmEditor({ alarmId }: { alarmId?: string }) {
         durationMin: snoozeMinutes,
         maxCount: snoozeEnabled ? snoozeLimit : 0,
       },
-      // Missions + Wake Check are kept as stored until the mission editor slot is wired.
-      missionBeforeSnooze: missionBeforeSnooze && rest.missions.length > 0,
+      missions,
+      missionBeforeSnooze: missionBeforeSnooze && missions.length > 0,
+      wakeCheck,
       important,
       // A new regular time supersedes a pending one-off change.
       oneOffOverride: timeChanged ? null : rest.oneOffOverride,
@@ -310,45 +319,42 @@ export function AlarmEditor({ alarmId }: { alarmId?: string }) {
           ) : null}
         </Section>
 
-        {/*
-         * ── MISSION CHAIN + WAKE CHECK SLOT ─────────────────────────────────────────────
-         * Integration task: render `MissionChainEditor` (src/features/missions) here,
-         * bound to `alarm.missions` (MissionStep[]), plus the Wake Check config editor
-         * bound to `alarm.wakeCheck`. Until then the stored values are preserved as-is by
-         * `draft()`; only `missionBeforeSnooze` (D32) is editable.
-         */}
+        <MissionChainEditor
+          steps={missions}
+          onChange={setMissions}
+          entitlement={entitlement}
+          onRequestUpgrade={() => router.push('/paywall')}
+        />
         <Section
-          title="Wake-up"
           footer={
-            base.missions.length === 0
+            missions.length === 0
               ? 'Add a mission to require it before stopping or snoozing.'
               : 'Stopping always requires the mission.'
           }
         >
           <ListRow
-            title="Missions"
-            value={base.missions.length ? `${base.missions.length}` : 'None'}
-            disabled
-          />
-          <Separator />
-          <ListRow
             title="Mission before snooze"
             accessory={
               <NativeSwitch
                 label="Mission before snooze"
-                value={missionBeforeSnooze && base.missions.length > 0}
+                value={missionBeforeSnooze && missions.length > 0}
                 onValueChange={setMissionBeforeSnooze}
-                disabled={base.missions.length === 0}
+                disabled={missions.length === 0}
               />
             }
           />
-          <Separator />
-          <ListRow title="Wake Check" value={base.wakeCheck.enabled ? 'On' : 'Off'} disabled />
         </Section>
+
+        <WakeCheckEditor
+          value={wakeCheck}
+          onChange={setWakeCheck}
+          entitlement={entitlement}
+          onRequestUpgrade={() => router.push('/paywall')}
+        />
 
         <Section
           title="Protection"
-          footer="When this alarm rings within 12 hours, turning it off, deleting, skipping or moving it later asks you to confirm."
+          footer="When this alarm rings within 12 hours, turning it off, deleting, skipping, moving it later or easing its missions or Wake Check asks you to confirm."
         >
           <ListRow
             title="Important"
