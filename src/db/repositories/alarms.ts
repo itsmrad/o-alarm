@@ -26,6 +26,7 @@ export function rowToAlarm(row: AlarmRow): Alarm {
     missions: row.missions,
     wakeCheck: row.wakeCheck,
     important: row.important,
+    missionBeforeSnooze: row.missionBeforeSnooze,
   };
 }
 

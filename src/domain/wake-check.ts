@@ -16,7 +16,8 @@ export type WakeCheckFailureReason = 'no_response' | 'verification_failed';
 
 export type WakeCheckState =
   | { status: 'idle' }
-  | { status: 'armed'; attempt: number; checkAt: string }
+  /** `respondBy` = checkAt + response window: when the native retrigger alarm fires. */
+  | { status: 'armed'; attempt: number; checkAt: string; respondBy: string }
   | { status: 'pending_verification'; attempt: number; deadline: string }
   | { status: 'passed'; attempt: number; at: string }
   | { status: 'failed'; attempt: number; at: string; reason: WakeCheckFailureReason }
@@ -26,7 +27,7 @@ export type WakeCheckEvent =
   /** User dismissed (after missions); start the verification delay. */
   | { type: 'ARM'; now: Date; config: WakeCheckConfig }
   /** The delayed check fired; ask the user to prove they are awake. */
-  | { type: 'CHECK_DUE'; now: Date; config: WakeCheckConfig }
+  | { type: 'CHECK_DUE'; now: Date }
   | { type: 'VERIFY_PASSED'; now: Date }
   | { type: 'VERIFY_FAILED'; now: Date }
   | { type: 'RESPONSE_TIMEOUT'; now: Date }
@@ -38,35 +39,35 @@ export const initialWakeCheckState: WakeCheckState = { status: 'idle' };
 const iso = (d: Date) => d.toISOString();
 const plus = (d: Date, ms: number) => new Date(d.getTime() + ms);
 
+function armed(attempt: number, now: Date, config: WakeCheckConfig): WakeCheckState {
+  const checkAt = plus(now, config.delayMin * 60_000);
+  return {
+    status: 'armed',
+    attempt,
+    checkAt: iso(checkAt),
+    respondBy: iso(plus(checkAt, config.responseWindowSec * 1000)),
+  };
+}
+
 /** Invalid transitions return the same state object (no-op), never throw. */
 export function wakeCheckReducer(state: WakeCheckState, event: WakeCheckEvent): WakeCheckState {
   switch (event.type) {
     case 'ARM': {
       if (!event.config.enabled) return state;
       if (state.status === 'idle') {
-        return {
-          status: 'armed',
-          attempt: 1,
-          checkAt: iso(plus(event.now, event.config.delayMin * 60_000)),
-        };
+        return armed(1, event.now, event.config);
       }
       if (state.status === 'retriggered') {
-        if (state.attempt >= event.config.maxRetriggers + 1) return state;
-        return {
-          status: 'armed',
-          attempt: state.attempt + 1,
-          checkAt: iso(plus(event.now, event.config.delayMin * 60_000)),
-        };
+        // Each failed check re-rings once; after `maxRetriggers` re-rings, no more checks.
+        if (state.attempt >= event.config.maxRetriggers) return state;
+        return armed(state.attempt + 1, event.now, event.config);
       }
       return state;
     }
     case 'CHECK_DUE':
       if (state.status !== 'armed') return state;
-      return {
-        status: 'pending_verification',
-        attempt: state.attempt,
-        deadline: iso(plus(event.now, event.config.responseWindowSec * 1000)),
-      };
+      // The deadline is fixed at arm time so it matches the native retrigger alarm.
+      return { status: 'pending_verification', attempt: state.attempt, deadline: state.respondBy };
     case 'VERIFY_PASSED':
       if (state.status !== 'pending_verification') return state;
       // A late answer is a missed check: the user may already have fallen back asleep.
@@ -104,6 +105,11 @@ export function wakeCheckReducer(state: WakeCheckState, event: WakeCheckEvent): 
 
 export function isWakeCheckActive(state: WakeCheckState): boolean {
   return state.status === 'armed' || state.status === 'pending_verification';
+}
+
+/** Engine schedule id for the re-trigger that rings if wake check `attempt` gets no answer. */
+export function retriggerScheduleId(occurrenceKey: string, attempt: number): string {
+  return `${occurrenceKey}#retrigger-${attempt}`;
 }
 
 /** Engine schedule id for the wake-check follow-up alarm of an occurrence (D13). */

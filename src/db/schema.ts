@@ -46,6 +46,7 @@ export const alarms = sqliteTable('alarms', {
   missions: json<MissionStep[]>('missions').notNull(),
   wakeCheck: json<WakeCheckConfig>('wake_check').notNull(),
   important: bool('important').notNull(),
+  missionBeforeSnooze: bool('mission_before_snooze').notNull().default(false),
 });
 
 export const alarmOccurrences = sqliteTable(
@@ -111,7 +112,11 @@ export const wakeChecks = sqliteTable(
     /** Full reducer state (src/domain/wake-check.ts), persisted across app restarts. */
     state: json<WakeCheckState>('state').notNull(),
   },
-  (t) => [index('wake_checks_session_idx').on(t.wakeSessionId)],
+  (t) => [
+    index('wake_checks_session_idx').on(t.wakeSessionId),
+    // One Wake Check row per occurrence (upserted); migration 0002 dedupes first.
+    uniqueIndex('wake_checks_occurrence_idx').on(t.occurrenceKey),
+  ],
 );
 
 export const sleepSessions = sqliteTable('sleep_sessions', {

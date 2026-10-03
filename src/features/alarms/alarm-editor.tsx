@@ -10,25 +10,51 @@ import { NativeSwitch } from '@/components/native-switch';
 import { Screen } from '@/components/screen';
 import { Section, Separator } from '@/components/section';
 import { deviceTimeZone, type SaveResult } from '@/db/alarm-service';
-import { computeNextFire, createAlarm, nextDateForTime, type Alarm, type Weekday } from '@/domain';
+import {
+  computeNextFire,
+  createAlarm,
+  nextDateForTime,
+  setOneOffOverride,
+  toggleSkipNext,
+  type Alarm,
+  type AlarmSound,
+  type Occurrence,
+  type WakeCheckConfig,
+  type Weekday,
+} from '@/domain';
+import type { MissionStep } from '@/domain/missions';
+import { useMissionEntitlement } from '@/features/missions/entitlement';
+import { MissionChainEditor } from '@/features/missions/mission-chain-editor';
+import { WakeCheckEditor } from '@/features/wakecheck/wake-check-editor';
 import { useAppServices, useNow } from '@/lib/app-services';
 import { useThemeColors } from '@/theme/tokens';
 
 import { ChipSelect } from './chip-select';
-import { describeRepeat, formatClockString, formatCountdown, formatRelativeDay } from './format';
+import { describeOccurrence, describeRepeat, formatClockString, formatCountdown } from './format';
+import { confirmWeakening, detectWeakening } from './important-guard';
+import { SoundPicker } from './sound-picker';
+import { soundOption } from './sounds';
 import { WeekdayPicker } from './weekday-picker';
 
 const SNOOZE_MINUTES = [5, 9, 10, 15, 20] as const;
-const SNOOZE_LIMITS = [1, 2, 3, 5] as const;
+const SNOOZE_LIMITS = [1, 2, 3, 5, 10] as const;
+const RAMP_SECONDS = [15, 30, 60, 120] as const;
 
 type SnoozeMinutes = (typeof SNOOZE_MINUTES)[number];
 type SnoozeLimit = (typeof SNOOZE_LIMITS)[number];
+type RampSeconds = (typeof RAMP_SECONDS)[number];
 
 const pick = <T extends number>(options: readonly T[], value: number, fallback: T): T =>
   (options as readonly number[]).includes(value) ? (value as T) : fallback;
 
 /** Leaves the editor; falls back to Home when opened directly (deep link). */
 const close = () => (router.canGoBack() ? router.back() : router.replace('/'));
+
+const timeOf = (hour: number, minute: number) => {
+  const d = new Date();
+  d.setHours(hour, minute, 0, 0);
+  return d;
+};
 
 /** Create (no id) or edit an alarm. Saves through the D11 write path. */
 export function AlarmEditor({ alarmId }: { alarmId?: string }) {
@@ -43,6 +69,13 @@ export function AlarmEditor({ alarmId }: { alarmId?: string }) {
   const [minute, setMinute] = useState(base.minute);
   const [weekdays, setWeekdays] = useState<Weekday[]>(base.weekdays);
   const [label, setLabel] = useState(base.label);
+  const [sound, setSound] = useState<AlarmSound>(base.sound);
+  const [soundOpen, setSoundOpen] = useState(false);
+  const [vibration, setVibration] = useState(base.vibration);
+  const [escalate, setEscalate] = useState(base.escalation.enabled);
+  const [rampSeconds, setRampSeconds] = useState<RampSeconds>(
+    pick(RAMP_SECONDS, base.escalation.rampSeconds, 30),
+  );
   const [snoozeEnabled, setSnoozeEnabled] = useState(base.snooze.enabled);
   const [snoozeMinutes, setSnoozeMinutes] = useState<SnoozeMinutes>(
     pick(SNOOZE_MINUTES, base.snooze.durationMin, 9),
@@ -50,16 +83,15 @@ export function AlarmEditor({ alarmId }: { alarmId?: string }) {
   const [snoozeLimit, setSnoozeLimit] = useState<SnoozeLimit>(
     pick(SNOOZE_LIMITS, base.snooze.maxCount, 3),
   );
-  const [vibration, setVibration] = useState(base.vibration);
+  const [missions, setMissions] = useState<MissionStep[]>(base.missions);
+  const [missionBeforeSnooze, setMissionBeforeSnooze] = useState(base.missionBeforeSnooze);
+  const [wakeCheck, setWakeCheck] = useState<WakeCheckConfig>(base.wakeCheck);
+  const entitlement = useMissionEntitlement();
   const [important, setImportant] = useState(base.important);
   const [saving, setSaving] = useState(false);
 
   const timeZone = deviceTimeZone();
-  const pickerValue = useMemo(() => {
-    const d = new Date();
-    d.setHours(hour, minute, 0, 0);
-    return d;
-  }, [hour, minute]);
+  const describe = (occurrence: Occurrence) => describeOccurrence(occurrence, new Date());
 
   const draft = (): Omit<Alarm, 'id'> & { id?: string } => {
     const { id: _ignored, ...rest } = base;
@@ -73,12 +105,18 @@ export function AlarmEditor({ alarmId }: { alarmId?: string }) {
       date: weekdays.length === 0 ? nextDateForTime(hour, minute, new Date(), timeZone) : null,
       label: label.trim(),
       enabled: true,
+      sound,
+      vibration,
+      escalation: { enabled: escalate, rampSeconds },
+      // Snooze is core reliability: every setting here is free (no Pro gating).
       snooze: {
         enabled: snoozeEnabled,
         durationMin: snoozeMinutes,
         maxCount: snoozeEnabled ? snoozeLimit : 0,
       },
-      vibration,
+      missions,
+      missionBeforeSnooze: missionBeforeSnooze && missions.length > 0,
+      wakeCheck,
       important,
       // A new regular time supersedes a pending one-off change.
       oneOffOverride: timeChanged ? null : rest.oneOffOverride,
@@ -100,10 +138,16 @@ export function AlarmEditor({ alarmId }: { alarmId?: string }) {
     }
   };
 
+  /** Important-alarm protection: confirm before weakening an imminent ring. */
+  const guarded = async (after: Alarm | null) =>
+    !existing || confirmWeakening(detectWeakening(existing, after, new Date(), timeZone), describe);
+
   const save = async () => {
+    const next = draft();
+    if (!(await guarded(createAlarm({ ...next, id: existing?.id ?? 'draft' })))) return;
     setSaving(true);
     try {
-      report(await service.save(draft()));
+      report(await service.save(next));
       close();
     } catch (error) {
       Alert.alert('Could not save alarm', error instanceof Error ? error.message : String(error));
@@ -112,7 +156,8 @@ export function AlarmEditor({ alarmId }: { alarmId?: string }) {
     }
   };
 
-  const run = async (action: () => Promise<SaveResult>) => {
+  const run = async (after: Alarm | null, action: () => Promise<SaveResult>) => {
+    if (!(await guarded(after))) return;
     try {
       report(await action());
       close();
@@ -121,8 +166,8 @@ export function AlarmEditor({ alarmId }: { alarmId?: string }) {
     }
   };
 
-  const confirmDelete = () => {
-    if (!existing) return;
+  const confirmDelete = async () => {
+    if (!existing || !(await guarded(null))) return;
     Alert.alert('Delete alarm?', 'This alarm will stop ringing.', [
       { text: 'Cancel', style: 'cancel' },
       {
@@ -154,7 +199,7 @@ export function AlarmEditor({ alarmId }: { alarmId?: string }) {
         <View className="items-center overflow-hidden rounded-card bg-surface py-2">
           <DateTimePicker
             mode="time"
-            value={pickerValue}
+            value={timeOf(hour, minute)}
             presentation="inline"
             display={Platform.OS === 'ios' ? 'spinner' : 'default'}
             accentColor={colors.accent}
@@ -167,7 +212,7 @@ export function AlarmEditor({ alarmId }: { alarmId?: string }) {
 
         <Text accessibilityLiveRegion="polite" className="px-4 text-callout text-foreground-muted">
           {preview
-            ? `Rings ${formatRelativeDay(preview.fireAt, now, preview.timeZone).toLowerCase()} at ${formatClockString(preview.hour, preview.minute)}, ${formatCountdown(preview.fireAt.getTime() - now.getTime())}.`
+            ? `Rings ${describeOccurrence(preview, now)}, ${formatCountdown(preview.fireAt.getTime() - now.getTime())}.`
             : 'This alarm has no upcoming ring.'}
         </Text>
 
@@ -193,6 +238,51 @@ export function AlarmEditor({ alarmId }: { alarmId?: string }) {
             className="min-h-touch px-4 py-3 text-body text-foreground"
             returnKeyType="done"
           />
+        </Section>
+
+        <Section
+          title="Sound"
+          footer={
+            sound.kind === 'default'
+              ? "Default uses your device's alarm tone; the preview here plays Classic."
+              : undefined
+          }
+        >
+          <ListRow
+            title="Sound"
+            value={soundOption(sound).name}
+            onPress={() => setSoundOpen((open) => !open)}
+          />
+          {soundOpen ? (
+            <>
+              <Separator />
+              <SoundPicker value={sound} onChange={setSound} />
+            </>
+          ) : null}
+          <Separator />
+          <ListRow
+            title="Vibrate"
+            accessory={
+              <NativeSwitch label="Vibrate" value={vibration} onValueChange={setVibration} />
+            }
+          />
+          <Separator />
+          <ListRow
+            title="Gradually louder"
+            detail="Starts quiet and rises to full volume"
+            accessory={
+              <NativeSwitch label="Gradually louder" value={escalate} onValueChange={setEscalate} />
+            }
+          />
+          {escalate ? (
+            <ChipSelect
+              label="Time to full volume"
+              options={RAMP_SECONDS}
+              value={rampSeconds}
+              onChange={setRampSeconds}
+              format={(s) => (s < 60 ? `${s} s` : `${s / 60} min`)}
+            />
+          ) : null}
         </Section>
 
         <Section title="Snooze" footer="A limit keeps snooze from becoming a way to oversleep.">
@@ -229,59 +319,175 @@ export function AlarmEditor({ alarmId }: { alarmId?: string }) {
           ) : null}
         </Section>
 
-        <Section title="Sound & behavior">
-          <ListRow title="Sound" value="Default" />
-          <Separator />
+        <MissionChainEditor
+          steps={missions}
+          onChange={setMissions}
+          entitlement={entitlement}
+          onRequestUpgrade={() => router.push('/paywall')}
+        />
+        <Section
+          footer={
+            missions.length === 0
+              ? 'Add a mission to require it before stopping or snoozing.'
+              : 'Stopping always requires the mission.'
+          }
+        >
           <ListRow
-            title="Vibrate"
+            title="Mission before snooze"
             accessory={
-              <NativeSwitch label="Vibrate" value={vibration} onValueChange={setVibration} />
+              <NativeSwitch
+                label="Mission before snooze"
+                value={missionBeforeSnooze && missions.length > 0}
+                onValueChange={setMissionBeforeSnooze}
+                disabled={missions.length === 0}
+              />
             }
           />
-          <Separator />
+        </Section>
+
+        <WakeCheckEditor
+          value={wakeCheck}
+          onChange={setWakeCheck}
+          entitlement={entitlement}
+          onRequestUpgrade={() => router.push('/paywall')}
+        />
+
+        <Section
+          title="Protection"
+          footer="When this alarm rings within 12 hours, turning it off, deleting, skipping, moving it later or easing its missions or Wake Check asks you to confirm."
+        >
           <ListRow
             title="Important"
-            detail="Warn before weakening this alarm close to ring time"
             accessory={
               <NativeSwitch label="Important" value={important} onValueChange={setImportant} />
             }
           />
         </Section>
 
-        <Section title="Wake-up" footer="Missions and Wake Check arrive in a later update.">
-          <ListRow title="Missions" value="None" disabled />
-          <Separator />
-          <ListRow title="Wake Check" value="Off" disabled />
-        </Section>
-
         {existing ? (
-          <View className="gap-3">
-            {existing.weekdays.length > 0 && existing.enabled ? (
-              <Button
-                variant="secondary"
-                title={existing.skipNext ? 'Undo skip next' : 'Skip next alarm'}
-                onPress={() => run(() => service.toggleSkipNext(existing.id))}
-              />
-            ) : null}
-            <Button
-              variant="secondary"
-              title="Test alarm"
-              accessibilityHint="Rings this alarm now"
-              onPress={() => {
-                service
-                  .testAlarm(existing.id)
-                  .catch((error: unknown) =>
-                    Alert.alert(
-                      'Test failed',
-                      error instanceof Error ? error.message : String(error),
-                    ),
-                  );
-              }}
-            />
-            <Button variant="destructive" title="Delete alarm" onPress={confirmDelete} />
-          </View>
+          <ExistingAlarmActions
+            alarm={existing}
+            now={now}
+            timeZone={timeZone}
+            onRun={run}
+            onDelete={confirmDelete}
+          />
         ) : null}
       </Screen>
     </>
+  );
+}
+
+/** Next-occurrence-only changes, test ring and delete (saved alarms only). */
+function ExistingAlarmActions({
+  alarm,
+  now,
+  timeZone,
+  onRun,
+  onDelete,
+}: {
+  alarm: Alarm;
+  now: Date;
+  timeZone: string;
+  onRun: (after: Alarm | null, action: () => Promise<SaveResult>) => Promise<void>;
+  onDelete: () => void;
+}) {
+  const { alarms: service } = useAppServices();
+  const colors = useThemeColors();
+  const next = computeNextFire(alarm, now, timeZone);
+  const [overrideOpen, setOverrideOpen] = useState(false);
+  const [overrideTime, setOverrideTime] = useState(() =>
+    next ? { hour: next.hour, minute: next.minute } : { hour: alarm.hour, minute: alarm.minute },
+  );
+
+  const applyOverride = () => {
+    let after: Alarm;
+    try {
+      after = setOneOffOverride(alarm, new Date(), timeZone, overrideTime);
+    } catch (error) {
+      Alert.alert('Cannot change', error instanceof Error ? error.message : String(error));
+      return;
+    }
+    onRun(after, () => service.setOneOffOverride(alarm.id, overrideTime));
+  };
+
+  return (
+    <View className="gap-4">
+      {alarm.enabled && next ? (
+        <Section
+          title="Next alarm only"
+          footer={
+            next.overridden
+              ? `Moved to ${formatClockString(next.hour, next.minute)} once; later alarms keep ${formatClockString(alarm.hour, alarm.minute)}.`
+              : `Change only ${describeOccurrence(next, now)}. Later alarms are unchanged.`
+          }
+        >
+          <ListRow
+            title={next.overridden ? 'Change again' : 'Change next alarm time'}
+            onPress={() => setOverrideOpen((open) => !open)}
+          />
+          {overrideOpen ? (
+            <>
+              <View className="items-center py-2">
+                <DateTimePicker
+                  mode="time"
+                  value={timeOf(overrideTime.hour, overrideTime.minute)}
+                  presentation="inline"
+                  display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                  accentColor={colors.accent}
+                  onValueChange={(_event, date) =>
+                    setOverrideTime({ hour: date.getHours(), minute: date.getMinutes() })
+                  }
+                />
+              </View>
+              <View className="px-4 pb-3">
+                <Button
+                  title={`Ring once at ${formatClockString(overrideTime.hour, overrideTime.minute)}`}
+                  onPress={applyOverride}
+                />
+              </View>
+            </>
+          ) : null}
+          {next.overridden ? (
+            <>
+              <Separator />
+              <ListRow
+                title="Restore regular time"
+                onPress={() =>
+                  onRun({ ...alarm, oneOffOverride: null }, () =>
+                    service.clearOneOffOverride(alarm.id),
+                  )
+                }
+              />
+            </>
+          ) : null}
+        </Section>
+      ) : null}
+
+      {alarm.weekdays.length > 0 && alarm.enabled ? (
+        <Button
+          variant="secondary"
+          title={alarm.skipNext ? 'Undo skip next' : 'Skip next alarm'}
+          onPress={() =>
+            onRun(toggleSkipNext(alarm, new Date(), timeZone), () =>
+              service.toggleSkipNext(alarm.id),
+            )
+          }
+        />
+      ) : null}
+      <Button
+        variant="secondary"
+        title="Test alarm"
+        accessibilityHint="Rings this alarm now"
+        onPress={() => {
+          service
+            .testAlarm(alarm.id)
+            .catch((error: unknown) =>
+              Alert.alert('Test failed', error instanceof Error ? error.message : String(error)),
+            );
+        }}
+      />
+      <Button variant="destructive" title="Delete alarm" onPress={onDelete} />
+    </View>
   );
 }

@@ -61,6 +61,11 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     'expo-notifications',
     'expo-secure-store',
     'expo-apple-authentication',
+    // D20: crash reporting. Org/project come from env; source-map upload needs SENTRY_AUTH_TOKEN (EAS secret).
+    [
+      '@sentry/react-native/expo',
+      { organization: process.env.SENTRY_ORG, project: process.env.SENTRY_PROJECT },
+    ],
     // D5: Android minSdk 26.
     ['expo-build-properties', { android: { minSdkVersion: 26 } }],
   ],

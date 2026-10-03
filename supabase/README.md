@@ -12,10 +12,14 @@ supabase/
   .env.example                env vars for local runs (no secrets)
   migrations/                 versioned SQL, applied in filename order
   tests/database/*.test.sql   pgTAP tests (RLS, anon denial, read-only, constraints, views, functions)
+  functions/
+    _shared/                  pure handler logic (Jest-tested from src/lib/purchases/*.test.ts)
+    revenuecat-webhook/       RevenueCat -> `entitlements` mirror
+    delete-account-cleanup/   RevenueCat subscriber + billing-row deletion
 ```
 
-Edge Functions (OpenRouter, RevenueCat webhook) are not part of this change; they will live in
-`supabase/functions/` and write to the service-role-only tables below.
+Edge Functions live in `supabase/functions/` and write to the service-role-only tables below
+(see [RevenueCat (billing)](#revenuecat-billing)). The OpenRouter function is a later change.
 
 ## Schema overview
 
@@ -35,8 +39,10 @@ Edge Functions (OpenRouter, RevenueCat webhook) are not part of this change; the
 | `ai_insights` | **service role only** | `type`, period, `structured jsonb`, `explanation`, `model`. Client read-only. |
 | `entitlements` | **service role only** | RevenueCat mirror (`pro`). Client read-only. |
 | `sync_state` | client | Per-device pull cursor, `guest_migrated_at`. |
-| `events` | client, **append-only** | `name` is checked against the 15 PRODUCT.md key events. |
+| `events` | client, **append-only** | `name` is checked against the PRODUCT.md key events + `alarm_deleted` (D26). |
+| `guest_migrations` | RPC only | One-time guest→account upload window per account (D22). |
 | `data_export_requests` | client creates, service role progresses | Async export jobs. |
+| `revenuecat_events` | **service role only** | Processed webhook event ids (idempotency). Keyed by `app_user_id`, no FK; removed by `delete-account-cleanup`. |
 
 **Why no `alarm_schedules` table:** D9 gives every alarm exactly one wall-clock rule, so a separate
 table would be a 1:1 child costing an extra join, tombstone and version per alarm. Concrete fire
@@ -73,8 +79,13 @@ instants already have their own table (`alarm_occurrences`). Split it out only i
   or function (grants revoked, default privileges changed) — and no policies.
 - Clients get `select, insert, update` only (`events`: `select, insert`; `ai_insights`, `entitlements`,
   `missions`: `select`). `service_role` (Edge Functions) bypasses RLS.
-- Pro gating is **not** enforced in SQL (the brief makes cloud sync a Pro feature, but that is a product
-  call; an `entitlements`-based check can be added to the write policies later).
+- **Pro gating of sync writes (D22):** restrictive insert/update policies on every client-writable sync
+  table (all of the above except `users` and `data_export_requests`) require `can_write_sync()` =
+  `has_entitlement('pro')` (active, unexpired `entitlements` row) **or** an open guest→account migration
+  window. The window is opened once per account by `begin_guest_migration(device_id)` (idempotent,
+  resumable for `guest_migration_window()` = 7 days) and closed by `complete_guest_migration()`; state lives
+  in the RPC-only `guest_migrations` table. Reads, `export_my_data()` and `delete_my_data()` stay open to
+  every signed-in user, so a lapsed subscriber never loses access to their data.
 - `export_my_data()` returns the caller's rows as one jsonb document; `delete_my_data()` hard-deletes the
   caller's `users` row (cascade removes everything, events included) and returns per-table counts. Both are
   `SECURITY DEFINER`, scoped to the JWT `sub`, raise for callers without one, and are not executable by anon.
@@ -133,4 +144,60 @@ No secrets in git (D21).
 |---|---|---|
 | `supabase/.env` or shell (CLI) | `CLERK_DOMAIN` | Clerk Frontend API domain; only needed if Clerk is enabled in `config.toml`. |
 | App (`EXPO_PUBLIC_*`, publishable) | `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY` | Client config. |
-| Edge Functions secrets (`supabase secrets set`) | `SUPABASE_SERVICE_ROLE_KEY` (injected by Supabase), `OPENROUTER_API_KEY`, `REVENUECAT_WEBHOOK_AUTH`, `CLERK_SECRET_KEY` (account deletion) | Server side only, never in the client. |
+| Edge Functions secrets (`supabase secrets set`) | `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` | Injected by Supabase; nothing to set. |
+| Edge Functions secrets | `REVENUECAT_WEBHOOK_AUTH` | Shared secret. Must equal the **Authorization header value** configured on the RevenueCat webhook (e.g. `Bearer <long random string>`). Unset => the webhook rejects everything (fail closed). |
+| Edge Functions secrets | `REVENUECAT_SECRET_API_KEY` | RevenueCat **secret** API key (v1, `sk_…`). Used for `TRANSFER` reconciliation and subscriber deletion. Unset => transfers are skipped and deletion reports `skipped` (it does not fail). |
+| Edge Functions secrets | `OPENROUTER_API_KEY`, `CLERK_SECRET_KEY` | Later changes (AI, server-side Clerk deletion); not read by the RevenueCat functions. |
+| App (`EXPO_PUBLIC_*`, publishable) | `EXPO_PUBLIC_REVENUECAT_IOS_KEY`, `EXPO_PUBLIC_REVENUECAT_ANDROID_KEY` | RevenueCat public SDK keys. Empty => preview mode (no store). |
+| App (`EXPO_PUBLIC_*`, publishable) | `EXPO_PUBLIC_TERMS_URL`, `EXPO_PUBLIC_PRIVACY_URL` | Paywall legal links (terms default to Apple's standard EULA; privacy is hidden until set). |
+
+## RevenueCat (billing)
+
+The client SDK is the source of truth for the UI (D18); the server mirror exists so Postgres can gate
+cloud sync writes (D22, `has_entitlement('pro')`). Everything keys on `app_user_id` = Clerk user id
+(the app calls `logIn(clerkUserId)` after sign-in, `logOut()` after sign-out).
+
+### `revenuecat-webhook`
+
+`POST /functions/v1/revenuecat-webhook`, `verify_jwt = false` (set in `config.toml`; if you deploy by
+hand use `--no-verify-jwt`). Flow: check `Authorization` against `REVENUECAT_WEBHOOK_AUTH`
+(constant-time) -> map the event -> `apply_revenuecat_entitlement()` (one transaction: record the event id,
+upsert `users` then `entitlements`).
+
+- **Idempotent per event id:** a redelivered event returns `duplicate` and changes nothing.
+- **Out-of-order safe:** an event older than `entitlements.latest_event_at` is `stale` and dropped.
+- **Access follows dates, not event names:** `CANCELLATION` only turns off `will_renew`; `BILLING_ISSUE`
+  keeps access until the grace period ends; `EXPIRATION` or an already-past expiry revokes it. No expiry
+  (lifetime/promotional) is active with `expires_at = null`. `has_entitlement()` also checks `expires_at`.
+- `TRANSFER` (entitlements moved between users) re-reads the new owner from the RevenueCat REST API
+  (needs `REVENUECAT_SECRET_API_KEY`) and deactivates the old owner.
+- Ignored with 200: `TEST`, anonymous `$RCAnonymousID:` users, other entitlements, unhandled types.
+  A deactivating event for a user with no `users` row is `skipped` (never resurrects a deleted account).
+- 401 bad/missing secret, 500 if the secret is unset or the write fails (RevenueCat retries).
+
+### `delete-account-cleanup`
+
+`POST /functions/v1/delete-account-cleanup` with `Authorization: Bearer <Clerk session token>`. The
+caller is verified by Postgres under that token (`current_user_id()`), never from the body. It deletes
+the RevenueCat subscriber (`DELETE /v1/subscribers/{id}`, 404 is fine), then the user's `revenuecat_events`
+and `entitlements` rows. The app calls it (`deleteBillingData()` in `src/lib/purchases`) with
+`delete_my_data()`, before deleting the Clerk user. It cannot cancel a store subscription.
+
+### Deploy
+
+```sh
+npx supabase@latest db push
+npx supabase@latest secrets set REVENUECAT_WEBHOOK_AUTH="Bearer $(openssl rand -hex 32)" \
+  REVENUECAT_SECRET_API_KEY=sk_...
+npx supabase@latest functions deploy revenuecat-webhook --no-verify-jwt
+npx supabase@latest functions deploy delete-account-cleanup --no-verify-jwt
+```
+
+RevenueCat dashboard: Project -> Integrations -> Webhooks -> New: URL
+`https://<project-ref>.supabase.co/functions/v1/revenuecat-webhook`, Authorization header = the exact
+`REVENUECAT_WEBHOOK_AUTH` value, environment: Production and Sandbox, entitlement filter: `pro`. Use
+"Send test event" (answers 200 `ignored`). In Project settings -> Customers, keep "Transfer" as the
+restore behavior so a guest purchase moves to the Clerk user on sign-in.
+
+Serve locally: start the stack without `-x edge-runtime`, then
+`npx supabase@latest functions serve --no-verify-jwt --env-file supabase/.env`.

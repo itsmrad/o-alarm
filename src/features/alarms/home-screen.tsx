@@ -1,5 +1,7 @@
-import { Stack, router } from 'expo-router';
-import { Text, View } from 'react-native';
+import Ionicons from '@expo/vector-icons/Ionicons';
+import { Stack, router, useIsFocused } from 'expo-router';
+import { useEffect } from 'react';
+import { Pressable, Text, View } from 'react-native';
 
 import { Button } from '@/components/button';
 import { ClockText } from '@/components/clock-text';
@@ -10,19 +12,33 @@ import { Screen } from '@/components/screen';
 import { Section, Separator } from '@/components/section';
 import { deviceTimeZone, type ScheduleStatus } from '@/db/alarm-service';
 import { computeNextFire, nextAlarmOccurrence, type Alarm } from '@/domain';
-import { useAlarms, useAppServices, useNow } from '@/lib/app-services';
+import { useAlarms, useAppServices, useNow, useRingState } from '@/lib/app-services';
+import { useThemeColors } from '@/theme/tokens';
 
 import {
+  describeOccurrence,
   describeRepeat,
   formatClock,
   formatClockString,
   formatCountdown,
   formatRelativeDay,
 } from './format';
+import { confirmWeakening, detectWeakening } from './important-guard';
 
 export function HomeScreen() {
   const alarms = useAlarms();
-  const { alarms: service } = useAppServices();
+  const { alarms: service, ring } = useAppServices();
+  const focused = useIsFocused();
+
+  // Morning check-in queued by the final wake-up: shown once the alarm screens are gone.
+  useEffect(() => {
+    if (!focused) return;
+    const open = () => {
+      if (ring.takeCheckIn()) router.push('/checkin');
+    };
+    open();
+    return ring.subscribe(open);
+  }, [focused, ring]);
   const now = useNow();
   const timeZone = deviceTimeZone();
   const next = nextAlarmOccurrence(alarms, now, timeZone);
@@ -38,6 +54,7 @@ export function HomeScreen() {
         }}
       />
       <Screen>
+        <MissedBanner />
         <View className="gap-1 rounded-card bg-surface p-5" accessibilityRole="summary">
           <Text className="text-footnote font-semibold uppercase text-foreground-muted">
             Next alarm
@@ -106,8 +123,12 @@ function AlarmRow({ alarm, now, timeZone }: { alarm: Alarm; now: Date; timeZone:
           <NativeSwitch
             label={`${alarm.enabled ? 'Disable' : 'Enable'} alarm ${time} ${period}`}
             value={alarm.enabled}
-            onValueChange={(enabled) => {
-              service.setEnabled(alarm.id, enabled).catch(() => undefined);
+            onValueChange={async (enabled) => {
+              const weakening = detectWeakening(alarm, { ...alarm, enabled }, new Date(), timeZone);
+              const proceed = await confirmWeakening(weakening, (occurrence) =>
+                describeOccurrence(occurrence, new Date()),
+              );
+              if (proceed) service.setEnabled(alarm.id, enabled).catch(() => undefined);
             }}
           />
         </View>
@@ -133,4 +154,46 @@ function StatusLine({ status }: { status: ScheduleStatus | undefined }) {
     );
   }
   return null;
+}
+
+/**
+ * Reliability ledger on Home: an expected ring that never triggered. Honest wording —
+ * "may not have rung" — because we only know the engine never reported it.
+ */
+function MissedBanner() {
+  const { ledger, ring } = useAppServices();
+  const colors = useThemeColors();
+  const missed = useRingState((services) => services.ledger.unacknowledgedMissed());
+  if (missed.length === 0) return null;
+  const latest = new Date(missed[0]!.expectedAt);
+  const message =
+    missed.length === 1
+      ? `An alarm may not have rung at ${formatClockString(latest.getHours(), latest.getMinutes())}`
+      : `${missed.length} alarms may not have rung`;
+
+  return (
+    <View accessibilityRole="alert" className="gap-2 rounded-card bg-warning p-4">
+      <Pressable
+        accessibilityRole="link"
+        accessibilityHint="Opens reliability diagnostics"
+        onPress={() => router.push('/settings/diagnostics')}
+        className="flex-row items-start gap-3 active:opacity-70"
+      >
+        <Ionicons name="alert-circle" size={22} color={colors['warning-foreground']} />
+        <Text className="flex-1 text-body font-semibold text-warning-foreground">
+          {message} — see why
+        </Text>
+      </Pressable>
+      <Pressable
+        accessibilityRole="button"
+        onPress={() => {
+          ledger.acknowledgeMissed();
+          ring.notify();
+        }}
+        className="min-h-touch justify-center self-end px-2"
+      >
+        <Text className="text-subhead font-semibold text-warning-foreground">Dismiss</Text>
+      </Pressable>
+    </View>
+  );
 }
