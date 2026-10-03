@@ -40,7 +40,13 @@ Every native error maps to an `AlarmEngineErrorCode`: `PERMISSION_DENIED`, `INVA
 `SCHEDULE_FAILED`, `SNOOZE_LIMIT`, `NOT_RINGING`, `NOT_IMPLEMENTED` or `UNKNOWN`. Nothing
 fails silently.
 
-<!-- PLATFORM SECTIONS: filled in when the Android and iOS implementations merge. -->
+## Android
+
+<!-- ANDROID: owned by the Android implementation. -->
+
+## iOS
+
+<!-- IOS: owned by the iOS implementation. -->
 
 ## Real-device test matrix
 
