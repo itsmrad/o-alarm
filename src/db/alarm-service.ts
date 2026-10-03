@@ -1,6 +1,7 @@
 import * as Crypto from 'expo-crypto';
 
 import {
+  DEFAULT_SNOOZE,
   alarmSchema,
   computeNextFire,
   setOneOffOverride as applyOneOffOverride,
@@ -10,7 +11,14 @@ import {
   type EngineKind,
   type Occurrence,
 } from '@/domain';
-import { reconcile, type AlarmEngine, type ReconcileResult } from '@/engine';
+import {
+  AlarmEngineError,
+  reconcile,
+  type AlarmEngine,
+  type AlarmScheduleSpec,
+  type ReconcileResult,
+  type ScheduledAlarm,
+} from '@/engine';
 
 import { createAlarmsRepository } from './repositories/alarms';
 import { createEventsRepository } from './repositories/events';
@@ -49,6 +57,30 @@ export interface AlarmServiceDeps {
 
 export const deviceTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
 
+/** Occurrence key of an in-app test ring; never part of the reliability ledger. */
+export const testOccurrenceKey = (alarmId: string, now: Date) => `${alarmId}#test-${now.getTime()}`;
+export const isTestOccurrence = (occurrenceKey: string) => occurrenceKey.includes('#test-');
+/** `<alarmId>@<date>` — a regular occurrence, not a snooze/wake-check/test follow-up. */
+export const isOccurrenceScheduleId = (id: string) => id.includes('@') && !id.includes('#');
+/** Alarm id of the Diagnostics "test alarm in 1 minute" (no DB alarm behind it). */
+export const TEST_ALARM_ID = 'test-alarm';
+
+/**
+ * The engine as reconcile sees it: test rings are not DB alarms, so they are hidden from
+ * the diff and never cancelled as orphans.
+ */
+function reconcileView(engine: AlarmEngine): AlarmEngine {
+  const getScheduled = async () =>
+    (await engine.getScheduled()).filter((entry) => !isTestOccurrence(entry.occurrenceKey));
+  return new Proxy(engine, {
+    get(target, prop) {
+      if (prop === 'getScheduled') return getScheduled;
+      const value = Reflect.get(target, prop, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
 const changedFields = (before: Alarm, after: Alarm) =>
   (Object.keys(after) as (keyof Alarm)[]).filter(
     (key) => JSON.stringify(before[key]) !== JSON.stringify(after[key]),
@@ -69,6 +101,7 @@ export function createAlarmService(deps: AlarmServiceDeps) {
   const eventsRepo = createEventsRepository(deps.db, newId);
   const outboxRepo = createOutboxRepository(deps.db, newId);
   const occurrencesRepo = createOccurrencesRepository(deps.db, newId);
+  const engineView = reconcileView(deps.engine);
   const statuses = new Map<string, ScheduleStatus>();
   const listeners = new Set<() => void>();
   const ctx = (): WriteContext => ({ now: clock(), deviceId: deps.deviceId });
@@ -80,6 +113,7 @@ export function createAlarmService(deps: AlarmServiceDeps) {
     const engine = deps.engine.kind;
     const changed = new Set([...result.plan.schedule, ...result.plan.reschedule].map((s) => s.id));
     const readFailure = result.failures.find((f) => f.operation === 'read');
+    withdraw(result.plan.cancel, alarms, write);
 
     for (const alarm of alarms) {
       const nextFire = computeNextFire(alarm, now, timeZone());
@@ -122,9 +156,18 @@ export function createAlarmService(deps: AlarmServiceDeps) {
     }
   }
 
+  /** Ledger: a cancelled future occurrence will not ring, so it must never read as missed. */
+  function withdraw(cancelled: readonly string[], alarms: readonly Alarm[], write: WriteContext) {
+    for (const id of cancelled) {
+      if (!isOccurrenceScheduleId(id)) continue;
+      const skipped = alarms.some((alarm) => alarm.skipNext === id);
+      occurrencesRepo.markWithdrawn(id, skipped ? 'skipped' : 'cancelled', write);
+    }
+  }
+
   async function scheduleOne(alarm: Alarm): Promise<ScheduleStatus> {
     const now = clock();
-    const result = await reconcile([alarm], deps.engine, {
+    const result = await reconcile([alarm], engineView, {
       now,
       timeZone: timeZone(),
       scope: alarm.id,
@@ -216,7 +259,8 @@ export function createAlarmService(deps: AlarmServiceDeps) {
         return deleted;
       });
       const now = clock();
-      const result = await reconcile([], deps.engine, { now, timeZone: timeZone(), scope: id });
+      const result = await reconcile([], engineView, { now, timeZone: timeZone(), scope: id });
+      withdraw(result.plan.cancel, [], ctx());
       const failure = result.failures[0];
       let status: ScheduleStatus = { state: 'inactive' };
       if (failure || result.mismatches.length > 0) {
@@ -244,7 +288,7 @@ export function createAlarmService(deps: AlarmServiceDeps) {
     async reconcileAll(): Promise<ReconcileResult> {
       const now = clock();
       const alarms = alarmsRepo.list();
-      const result = await reconcile(alarms, deps.engine, { now, timeZone: timeZone() });
+      const result = await reconcile(alarms, engineView, { now, timeZone: timeZone() });
       record(alarms, result, now);
       notify();
       return result;
@@ -254,23 +298,47 @@ export function createAlarmService(deps: AlarmServiceDeps) {
     async testAlarm(id: string): Promise<void> {
       const alarm = requireAlarm(id);
       const now = clock();
-      await deps.engine.previewAlarm({
-        id: `${alarm.id}#test`,
-        alarmId: alarm.id,
-        occurrenceKey: `${alarm.id}#test`,
-        kind: 'alarm',
-        fireAt: now.toISOString(),
-        label: alarm.label.trim() || 'Test alarm',
-        sound: alarm.sound,
-        vibration: alarm.vibration,
-        escalation: alarm.escalation,
-        snooze: alarm.snooze,
-        hasMissions: alarm.missions.length > 0,
-        wakeCheck: alarm.wakeCheck.enabled,
-        important: alarm.important,
-      });
+      // Unique per run so each test ring is its own (ledger-free) occurrence.
+      await deps.engine.previewAlarm(testSpec(alarm, testOccurrenceKey(alarm.id, now), now));
+    },
+
+    /**
+     * Diagnostics: schedule a real engine alarm `delayMs` from now and verify the engine
+     * holds it. Not a DB alarm and never in the reliability ledger. Rejects on failure.
+     */
+    async scheduleTestAlarm(delayMs = 60_000): Promise<ScheduledAlarm> {
+      const now = clock();
+      const key = testOccurrenceKey(TEST_ALARM_ID, now);
+      const spec = testSpec(null, key, new Date(now.getTime() + delayMs));
+      const entry = await deps.engine.schedule(spec);
+      const readBack = await deps.engine.getScheduled();
+      if (!readBack.some((scheduled) => scheduled.id === key)) {
+        throw new AlarmEngineError(
+          'SCHEDULE_FAILED',
+          'The system did not report the test alarm as scheduled.',
+        );
+      }
+      return entry;
     },
   };
+
+  function testSpec(alarm: Alarm | null, key: string, fireAt: Date): AlarmScheduleSpec {
+    return {
+      id: key,
+      alarmId: alarm?.id ?? TEST_ALARM_ID,
+      occurrenceKey: key,
+      kind: 'alarm',
+      fireAt: fireAt.toISOString(),
+      label: alarm?.label.trim() || 'Test alarm',
+      sound: alarm?.sound ?? { kind: 'default', id: null },
+      vibration: alarm?.vibration ?? true,
+      escalation: alarm?.escalation ?? { enabled: false, rampSeconds: 0 },
+      snooze: alarm?.snooze ?? DEFAULT_SNOOZE,
+      hasMissions: (alarm?.missions.length ?? 0) > 0,
+      wakeCheck: alarm?.wakeCheck.enabled ?? false,
+      important: alarm?.important ?? false,
+    };
+  }
 
   function requireAlarm(id: string): Alarm {
     const alarm = alarmsRepo.get(id);

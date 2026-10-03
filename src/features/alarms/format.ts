@@ -3,6 +3,7 @@ import {
   localDateInZone,
   parseLocalDate,
   type Alarm,
+  type Occurrence,
   type Weekday,
 } from '@/domain';
 
@@ -100,3 +101,7 @@ export function formatRelativeDay(instant: Date, now: Date, timeZone: string): s
     return weekdayShort(weekday.getDay() as Weekday);
   }
 }
+
+/** "tomorrow at 7:00 AM" — for confirm sheets and summaries. */
+export const describeOccurrence = (occurrence: Occurrence, now: Date): string =>
+  `${formatRelativeDay(occurrence.fireAt, now, occurrence.timeZone).toLowerCase()} at ${formatClockString(occurrence.hour, occurrence.minute)}`;

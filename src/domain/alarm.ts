@@ -89,6 +89,8 @@ export const alarmSchema = z
     wakeCheck: wakeCheckConfigSchema,
     /** Protect against weakening this alarm shortly before it rings. */
     important: z.boolean(),
+    /** Snoozing requires completing the mission chain first (D32). */
+    missionBeforeSnooze: z.boolean(),
   })
   .superRefine((alarm, ctx) => {
     if (new Set(alarm.weekdays).size !== alarm.weekdays.length) {
@@ -148,6 +150,7 @@ export function createAlarm(
     missions: [],
     wakeCheck: DEFAULT_WAKE_CHECK,
     important: false,
+    missionBeforeSnooze: false,
     ...rest,
     weekdays: sortWeekdays(weekdays),
   });
