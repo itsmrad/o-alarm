@@ -10,12 +10,19 @@ import {
   resetAnalyticsForTests,
   setAnalyticsOptOut,
   track,
+  trackInsightsViewed,
   trackPaywall,
   type AnalyticsClient,
 } from './analytics';
 import { createObservabilityBridge } from './bridge';
 import { DEFAULT_POSTHOG_HOST, readObservabilityConfig } from './config';
-import { ALLOWED_PROPERTIES, paywallEvent, toProductEvent, type ProductEvent } from './event-map';
+import {
+  ALLOWED_PROPERTIES,
+  paywallEvent,
+  sanitize,
+  toProductEvent,
+  type ProductEvent,
+} from './event-map';
 import {
   captureIssue,
   initSentry,
@@ -165,6 +172,18 @@ describe('PostHog opt-out', () => {
     expect(client.optOut).toHaveBeenCalled();
     track(event);
     expect(captured).toHaveLength(1);
+  });
+
+  it('insights_viewed carries no properties, whatever is passed', () => {
+    const { client, captured } = fakeAnalytics();
+    initAnalytics({ optOut: false, config: KEYS, create: () => client });
+    trackInsightsViewed();
+    track(sanitize('insights_viewed', { tier: 'pro', sleepMin: 420, label: 'Gym' }));
+    expect(ALLOWED_PROPERTIES.insights_viewed).toEqual([]);
+    expect(captured).toEqual([
+      { name: 'insights_viewed', properties: {} },
+      { name: 'insights_viewed', properties: {} },
+    ]);
   });
 
   it('passes the stored opt-out to the client it creates', () => {

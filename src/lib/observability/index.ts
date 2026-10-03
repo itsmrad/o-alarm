@@ -4,7 +4,7 @@
  * the ring path. Raw sleep data never goes to analytics (D12).
  */
 export { initSentry, captureIssue, captureError, type ReliabilityIssue } from './sentry';
-export { setAnalyticsOptOut, track, trackPaywall } from './analytics';
+export { setAnalyticsOptOut, track, trackInsightsViewed, trackPaywall } from './analytics';
 export type { PaywallEventName, PaywallEventProps, ProductEvent } from './event-map';
 export { AppErrorBoundary } from './error-boundary';
 export { ObservabilityRoot } from './observability-root';

@@ -32,12 +32,12 @@ import { useThemeColors } from '@/theme/tokens';
 import { ChipSelect } from './chip-select';
 import { describeOccurrence, describeRepeat, formatClockString, formatCountdown } from './format';
 import { confirmWeakening, detectWeakening } from './important-guard';
+import { SNOOZE_LIMITS, applyPrefill, hasPrefill, type AlarmEditorPrefill } from './prefill';
 import { SoundPicker } from './sound-picker';
 import { soundOption } from './sounds';
 import { WeekdayPicker } from './weekday-picker';
 
 const SNOOZE_MINUTES = [5, 9, 10, 15, 20] as const;
-const SNOOZE_LIMITS = [1, 2, 3, 5, 10] as const;
 const RAMP_SECONDS = [15, 30, 60, 120] as const;
 
 type SnoozeMinutes = (typeof SNOOZE_MINUTES)[number];
@@ -56,14 +56,26 @@ const timeOf = (hour: number, minute: number) => {
   return d;
 };
 
-/** Create (no id) or edit an alarm. Saves through the D11 write path. */
-export function AlarmEditor({ alarmId }: { alarmId?: string }) {
+/**
+ * Create (no id) or edit an alarm. Saves through the D11 write path. `prefill` (an Insights
+ * suggestion) only seeds the form; the user still reviews and saves it.
+ */
+export function AlarmEditor({
+  alarmId,
+  prefill = {},
+}: {
+  alarmId?: string;
+  prefill?: AlarmEditorPrefill;
+}) {
   const { alarms: service } = useAppServices();
   const colors = useThemeColors();
   const now = useNow();
   const existing = useMemo(() => (alarmId ? service.get(alarmId) : null), [alarmId, service]);
-  const base =
-    existing ?? createAlarm({ id: 'draft', hour: 7, minute: 0, weekdays: [1, 2, 3, 4, 5] });
+  const base = applyPrefill(
+    existing ?? createAlarm({ id: 'draft', hour: 7, minute: 0, weekdays: [1, 2, 3, 4, 5] }),
+    prefill,
+  );
+  const prefilled = hasPrefill(prefill);
 
   const [hour, setHour] = useState(base.hour);
   const [minute, setMinute] = useState(base.minute);
@@ -174,11 +186,18 @@ export function AlarmEditor({ alarmId }: { alarmId?: string }) {
         text: 'Delete',
         style: 'destructive',
         onPress: async () => {
-          const status = await service.remove(existing.id);
-          if (status.state === 'failed') {
-            Alert.alert('Deleted, but the system still has it', status.message);
+          try {
+            const status = await service.remove(existing.id);
+            if (status.state === 'failed') {
+              Alert.alert('Deleted, but the system still has it', status.message);
+            }
+            close();
+          } catch (error) {
+            Alert.alert(
+              'Could not delete alarm',
+              error instanceof Error ? error.message : String(error),
+            );
           }
-          close();
         },
       },
     ]);
@@ -196,6 +215,11 @@ export function AlarmEditor({ alarmId }: { alarmId?: string }) {
         }}
       />
       <Screen>
+        {prefilled ? (
+          <Text accessibilityRole="alert" className="text-footnote text-foreground-muted">
+            Suggested from Insights and filled in below. Nothing changes until you tap Save.
+          </Text>
+        ) : null}
         <View className="items-center overflow-hidden rounded-card bg-surface py-2">
           <DateTimePicker
             mode="time"

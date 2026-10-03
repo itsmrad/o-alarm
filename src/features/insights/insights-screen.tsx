@@ -1,15 +1,23 @@
-import { router } from 'expo-router';
-import type { ReactNode } from 'react';
+import { router, useFocusEffect } from 'expo-router';
+import { useCallback, type ReactNode } from 'react';
 import { ActivityIndicator, Text, View } from 'react-native';
 
 import { Button } from '@/components/button';
 import { Screen } from '@/components/screen';
 import { Section, Separator } from '@/components/section';
+import type { Alarm } from '@/domain';
 import type { StructuredInsight, WakeAnalysis } from '@/domain/insights';
+import {
+  SNOOZE_LIMITS,
+  hasPrefill,
+  prefillParams,
+  type AlarmEditorPrefill,
+} from '@/features/alarms/prefill';
 import type { ExplainTopic } from '@/domain/insights-payload';
 import { usePaywall } from '@/features/paywall/use-paywall';
 import { describeRationale, formatTime } from '@/features/sleep/format';
 import type { AiAvailability, AiExplanation, AiUnavailableReason } from '@/lib/ai';
+import { trackInsightsViewed } from '@/lib/observability';
 import { useThemeColors } from '@/theme/tokens';
 
 import {
@@ -31,6 +39,8 @@ import { useInsightsData, type InsightsData } from './use-insights';
 export function InsightsScreen() {
   const data = useInsightsData();
   const { analysis } = data;
+  // Each time the tab is opened (D20: coarse, no properties; never on the ring path).
+  useFocusEffect(useCallback(() => trackInsightsViewed(), []));
   const patterns = analysis.insights.filter(
     (i) => i.kind !== 'mission_effectiveness' && i.kind !== 'sleep_energy',
   );
@@ -432,14 +442,36 @@ const ALARM_KINDS = new Set<StructuredInsight['kind']>([
 const SLEEP_KINDS = new Set<StructuredInsight['kind']>(['consistency', 'sleep_energy']);
 
 /**
+ * The deterministic change an alarm insight points at, for the editor to pre-fill: fewer
+ * snoozes when snoozing needs attention, Wake Check when the user went back to sleep or
+ * Wake Checks keep failing. Empty when there is nothing concrete to suggest.
+ */
+export function suggestedPrefill(insight: StructuredInsight, alarm: Alarm): AlarmEditorPrefill {
+  if (insight.tone !== 'attention') return {};
+  if (insight.kind === 'snoozing' && alarm.snooze.enabled) {
+    const fewer = SNOOZE_LIMITS.filter((limit) => limit < alarm.snooze.maxCount).pop();
+    return fewer === undefined ? {} : { snoozeMaxCount: fewer };
+  }
+  if (
+    (insight.kind === 'returned_to_sleep' || insight.kind === 'wake_check') &&
+    !alarm.wakeCheck.enabled
+  ) {
+    return { wakeCheck: true };
+  }
+  return {};
+}
+
+/**
  * Where a suggestion can take the user. Deterministic, from the insight it rests on; it only
- * opens a screen. The alarm editor opens on the user's main alarm, unchanged, to edit and save.
+ * opens a screen. The alarm editor opens on the user's main alarm, pre-filled with the
+ * suggested change when there is one, for the user to review and save (never auto-applied).
  */
 export function suggestionAction(
   basedOn: string,
   data: Pick<InsightsData, 'analysis' | 'alarms'>,
 ): { title: string; hint: string; onPress: () => void } | null {
-  const kind = data.analysis.insights.find((i) => i.id === basedOn)?.kind;
+  const insight = data.analysis.insights.find((i) => i.id === basedOn);
+  const kind = insight?.kind;
   if (basedOn === 'bedtime' || (kind && SLEEP_KINDS.has(kind))) {
     return {
       title: 'Open Bedtime',
@@ -448,11 +480,20 @@ export function suggestionAction(
     };
   }
   const alarmId = data.analysis.primaryAlarmId;
-  if (kind && ALARM_KINDS.has(kind) && alarmId && data.alarms.some((a) => a.id === alarmId)) {
+  const alarm = data.alarms.find((a) => a.id === alarmId);
+  if (kind && ALARM_KINDS.has(kind) && alarmId && alarm && insight) {
+    const prefill = suggestedPrefill(insight, alarm);
+    const suggested = hasPrefill(prefill);
     return {
-      title: 'Review alarm',
-      hint: 'Opens the alarm editor. Nothing changes until you save.',
-      onPress: () => router.push({ pathname: '/alarm/[id]', params: { id: alarmId } }),
+      title: suggested ? 'Review suggested change' : 'Review alarm',
+      hint: suggested
+        ? 'Opens the alarm editor with the change filled in. Nothing changes until you save.'
+        : 'Opens the alarm editor. Nothing changes until you save.',
+      onPress: () =>
+        router.push({
+          pathname: '/alarm/[id]',
+          params: { id: alarmId, ...prefillParams(prefill) },
+        }),
     };
   }
   return null;

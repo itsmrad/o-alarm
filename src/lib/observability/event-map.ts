@@ -18,7 +18,8 @@ export type ProductEventName =
   | 'purchase_started'
   | 'purchase_completed'
   | 'purchase_failed'
-  | 'purchase_restored';
+  | 'purchase_restored'
+  | 'insights_viewed';
 
 export type PropertyValue = string | number | boolean;
 
@@ -61,6 +62,8 @@ export const ALLOWED_PROPERTIES: Record<ProductEventName, readonly string[]> = {
   purchase_completed: ['tier', 'plan', 'source'],
   purchase_failed: ['tier', 'plan', 'source'],
   purchase_restored: ['tier', 'source'],
+  // Opening the Insights tab; no properties at all (sleep/wake data stays on device, D12).
+  insights_viewed: [],
 };
 
 /** String values must come from these sets (anything else becomes `other`). */

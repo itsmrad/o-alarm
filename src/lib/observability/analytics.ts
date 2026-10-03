@@ -1,6 +1,7 @@
 import { isTestEnvironment, readObservabilityConfig, type ObservabilityConfig } from './config';
 import {
   paywallEvent,
+  sanitize,
   type PaywallEventName,
   type PaywallEventProps,
   type ProductEvent,
@@ -89,6 +90,11 @@ export function track(event: ProductEvent | null): void {
  */
 export function trackPaywall(name: PaywallEventName, props: PaywallEventProps = {}): void {
   track(paywallEvent(name, { ...props, tier: currentTier() }));
+}
+
+/** The Insights tab was opened. Carries no properties. */
+export function trackInsightsViewed(): void {
+  track(sanitize('insights_viewed', {}));
 }
 
 /** Test-only. */
