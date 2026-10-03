@@ -135,7 +135,7 @@ describe('ring lifecycle: routing', () => {
     t.engine.emit('trigger', event); // duplicate delivery
     await flush();
 
-    expect(t.shown).toHaveLength(2); // routing is cheap; the screen dedupes itself
+    expect(t.shown).toHaveLength(1); // one ringing screen per ring
     const types = t
       .types()
       .filter((type) => type.startsWith('alarm_') && type !== 'alarm_native_scheduled');
@@ -159,6 +159,106 @@ describe('ring lifecycle: routing', () => {
     await flush();
     expect(t.shown).toHaveLength(0);
     t.ring.stop();
+    t.close();
+  });
+
+  it('routes each ring once: trigger + foreground sync before the screen mounts', async () => {
+    const t = setup();
+    const { alarm } = await t.alarms.save(draft());
+    t.ring.start();
+    await flush();
+    t.setNow(FIRE);
+    t.engine.ringing = ringingOf(alarm);
+    t.engine.emit('trigger', ringingOf(alarm));
+    // The full-screen intent brings the app to the foreground at the same moment.
+    await t.ring.sync('foreground');
+    await t.ring.sync('foreground');
+    expect(t.shown.map((e) => e.scheduleId)).toEqual([`${alarm.id}@2026-10-02`]);
+    t.ring.stop();
+    t.close();
+  });
+
+  it('cold start via the full-screen intent: the deep-linked screen owns the ring', async () => {
+    const t = setup();
+    const { alarm } = await t.alarms.save(draft());
+    t.setNow(FIRE);
+    t.engine.ringing = ringingOf(alarm);
+    // oalarm://ringing mounted the screen before AppServices started the lifecycle.
+    t.ring.setRingingScreenOpen(true);
+    t.ring.start();
+    await flush();
+    t.engine.emit('trigger', ringingOf(alarm));
+    await flush();
+    expect(t.shown).toHaveLength(0);
+    expect(t.ring.getLastSync()?.ringing?.scheduleId).toBe(`${alarm.id}@2026-10-02`);
+    t.ring.stop();
+    t.close();
+  });
+
+  it('a different ring, a closed screen or a stale request routes again', async () => {
+    const t = setup();
+    const { alarm } = await t.alarms.save(draft());
+    t.setNow(FIRE);
+    t.engine.ringing = ringingOf(alarm);
+    await t.ring.sync('start');
+    // Navigation never happened (no screen mounted): retried once the request is stale.
+    await t.ring.sync('foreground');
+    expect(t.shown).toHaveLength(1);
+    t.setNow('2026-10-02T11:00:11.000Z');
+    await t.ring.sync('foreground');
+    expect(t.shown).toHaveLength(2);
+    // Mounted then closed while still ringing: the half-awake user must see it again.
+    t.ring.setRingingScreenOpen(true);
+    t.ring.setRingingScreenOpen(false);
+    await t.ring.sync('foreground');
+    expect(t.shown).toHaveLength(3);
+    // A second alarm is a different ring.
+    t.engine.ringing = ringingOf(alarm, { scheduleId: `${alarm.id}#snooze-1` });
+    await t.ring.sync('foreground');
+    expect(t.shown.map((e) => e.scheduleId)).toEqual([
+      `${alarm.id}@2026-10-02`,
+      `${alarm.id}@2026-10-02`,
+      `${alarm.id}@2026-10-02`,
+      `${alarm.id}#snooze-1`,
+    ]);
+    t.close();
+  });
+
+  it('ringing → Wake Check replace: an overlapping unmount keeps the screen registered', async () => {
+    const t = setup();
+    const { alarm } = await t.alarms.save(draft());
+    t.ring.start();
+    t.ring.setRingingScreenOpen(true); // ringing screen
+    t.ring.setRingingScreenOpen(true); // wake-check screen mounts first…
+    t.ring.setRingingScreenOpen(false); // …then the replaced ringing screen unmounts
+    t.engine.emit('trigger', ringingOf(alarm, { kind: 'wake_check' }));
+    await flush();
+    expect(t.prompts).toHaveLength(0);
+    t.ring.stop();
+    t.close();
+  });
+
+  it('a router that is not ready yet never breaks trigger bookkeeping', async () => {
+    const t = setup();
+    const { alarm } = await t.alarms.save(draft());
+    const ring = createRingLifecycle({
+      engine: t.engine,
+      alarms: t.alarms,
+      ledger: t.ledger,
+      wakeChecks: t.wakeChecks,
+      showRinging: () => {
+        throw new Error('Attempted to navigate before mounting the Root Layout');
+      },
+      showWakeCheck: () => undefined,
+      clock: () => new Date(FIRE),
+      timeZone: () => NY,
+    });
+    ring.start();
+    await flush();
+    t.engine.emit('trigger', ringingOf(alarm));
+    await flush();
+    expect(t.types()).toContain('alarm_trigger_received');
+    ring.stop();
     t.close();
   });
 

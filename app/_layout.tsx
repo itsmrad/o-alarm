@@ -61,8 +61,11 @@ function Navigation() {
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="alarm/new" options={{ presentation: 'modal', title: 'New Alarm' }} />
         <Stack.Screen name="alarm/[id]" options={{ presentation: 'modal', title: 'Edit Alarm' }} />
+        {/* Singular: the full-screen intent deep link (oalarm://ringing) and the JS trigger
+            can both push an alarm screen; a second push reuses the open one (never stacks). */}
         <Stack.Screen
           name="ringing"
+          dangerouslySingular
           options={{ presentation: 'fullScreenModal', headerShown: false, gestureEnabled: false }}
         />
         <Stack.Screen
@@ -71,6 +74,7 @@ function Navigation() {
         />
         <Stack.Screen
           name="wake-check"
+          dangerouslySingular
           options={{ presentation: 'fullScreenModal', headerShown: false, gestureEnabled: false }}
         />
         <Stack.Screen name="paywall" options={{ presentation: 'modal', title: 'O-Alarm Pro' }} />

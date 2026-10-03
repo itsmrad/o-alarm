@@ -35,13 +35,14 @@ export function GatedMission({ params }: { params: MissionGateParams }) {
   // The alarm stopped some other way (system Stop, re-trigger took over): nothing to gate.
   useEffect(() => {
     const check = () => {
-      engine
-        .getActiveRinging()
-        .catch(() => null)
-        .then((ringing) => {
+      engine.getActiveRinging().then(
+        (ringing) => {
           if (completing.current) return;
           if (!ringing || ringing.scheduleId !== params.scheduleId) leave();
-        });
+        },
+        // A failed read is not "the alarm stopped": stay; the next ring event re-checks.
+        () => undefined,
+      );
     };
     check();
     return ring.subscribe(check);

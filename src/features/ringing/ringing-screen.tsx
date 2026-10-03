@@ -28,6 +28,9 @@ type View_ =
 
 const close = () => (router.canGoBack() ? router.back() : router.replace('/'));
 
+/** A failed engine read is retried after this long; it never closes the alarm screen. */
+export const RINGING_READ_RETRY_MS = 2_000;
+
 const subtitleFor = (ringing: RingingState) => {
   if (ringing.occurrenceKey.includes('#test-')) return 'Test alarm';
   if (ringing.kind === 'snooze') return `Snoozed ${ringing.snoozeCount}×`;
@@ -52,19 +55,26 @@ export function RingingScreen() {
   const [view, setView] = useState<View_>({ status: 'loading' });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [readFailures, setReadFailures] = useState(0);
 
   const refresh = useCallback(() => {
-    engine
-      .getActiveRinging()
-      .catch(() => null)
-      .then((ringing) =>
+    engine.getActiveRinging().then(
+      (ringing) =>
         setView(
           ringing
             ? { status: 'ringing', ringing, alarm: alarms.get(ringing.alarmId) }
             : { status: 'ended' },
         ),
-      );
+      // A failed read is not "the ring ended": keep the screen up and read again.
+      () => setReadFailures((n) => n + 1),
+    );
   }, [engine, alarms]);
+
+  useEffect(() => {
+    if (readFailures === 0) return;
+    const id = setTimeout(refresh, RINGING_READ_RETRY_MS);
+    return () => clearTimeout(id);
+  }, [readFailures, refresh]);
 
   useEffect(() => {
     ring.setRingingScreenOpen(true);

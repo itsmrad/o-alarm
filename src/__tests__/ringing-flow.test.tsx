@@ -51,6 +51,13 @@ async function ringAt(at: Date) {
   });
 }
 
+/** A repeated `trigger` delivery (e.g. the JS listener racing the full-screen intent). */
+const emitTrigger = (payload: unknown) =>
+  (mockEngine as unknown as { emit(type: 'trigger', event: unknown): void }).emit(
+    'trigger',
+    payload,
+  );
+
 const hold = (label: string) =>
   fireEvent(screen.getByLabelText(label), 'accessibilityAction', {
     nativeEvent: { actionName: 'longpress' },
@@ -137,5 +144,41 @@ describe('ringing flow (Expo Go preview engine)', () => {
     app.unmount();
     const relaunched = renderRouter('./app', { initialUrl: '/' });
     await waitFor(() => expect(relaunched.getPathname()).toBe('/ringing'));
+  });
+
+  it('full-screen intent cold start: one ringing screen, kept up through a failed engine read', async () => {
+    const app = renderRouter('./app', { initialUrl: '/' });
+    await screen.findByText('No alarm set');
+    fireEvent.press(screen.getByText('Add alarm'));
+    fireEvent.changeText(await screen.findByLabelText('Alarm label'), 'Work');
+    await act(async () => fireEvent.press(screen.getByLabelText('Save')));
+    await waitFor(() => expect(app.getPathname()).toBe('/'));
+    await ringAt(new Date(FIRE.getTime() + 1_000));
+    await waitFor(() => expect(app.getPathname()).toBe('/ringing'));
+    const ringing = (await mockEngine!.getActiveRinging())!;
+    app.unmount();
+
+    // Android's full-screen intent launches oalarm://ringing?… while the JS start sync
+    // also finds the ring via getActiveRinging: exactly one ringing screen.
+    const relaunched = renderRouter('./app', {
+      initialUrl: `/ringing?scheduleId=${encodeURIComponent(ringing.scheduleId)}`,
+    });
+    expect(await screen.findByText('Work')).toBeTruthy();
+    await act(async () => emitTrigger(ringing));
+    await act(async () => jest.advanceTimersByTimeAsync(100));
+    const root = relaunched.getRouterState()?.routes[0]?.state;
+    const routes = root?.routes ?? [];
+    expect(routes.filter((route) => route.name === 'ringing')).toHaveLength(1);
+
+    // An engine read that fails is not "the ring ended": the screen stays up.
+    const read = jest
+      .spyOn(mockEngine!, 'getActiveRinging')
+      .mockRejectedValueOnce(new Error('mirror unreadable'));
+    await act(async () => emitTrigger(ringing));
+    await act(async () => jest.advanceTimersByTimeAsync(2_500));
+    expect(read.mock.calls.length).toBeGreaterThanOrEqual(2); // retried
+    expect(relaunched.getPathname()).toBe('/ringing');
+    expect(screen.getByText('Work')).toBeTruthy();
+    read.mockRestore();
   });
 });
