@@ -4,10 +4,11 @@ import { ListRow } from '@/components/list-row';
 import { NativeSwitch } from '@/components/native-switch';
 import { Section } from '@/components/section';
 import { useAppServices } from '@/lib/app-services';
+import { setAnalyticsOptOut } from '@/lib/observability';
 import { PREFERENCE_KEYS, readPreference, writePreference } from '@/lib/sync';
 
 /**
- * Analytics opt-out (stored locally in `preferences`; analytics wiring reads it when it lands, D20).
+ * Analytics opt-out (stored locally in `preferences`; read at start and applied live, D20).
  * Raw sleep/wake history never goes to analytics regardless of this switch.
  */
 export function PrivacySection() {
@@ -19,6 +20,8 @@ export function PrivacySection() {
   const onChange = (share: boolean) => {
     setOptOut(!share);
     writePreference(db, PREFERENCE_KEYS.analyticsOptOut, !share, { now: new Date(), deviceId });
+    // Live: opting out stops all capture immediately.
+    setAnalyticsOptOut(!share);
   };
 
   return (
