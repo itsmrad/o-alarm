@@ -10,9 +10,13 @@ import { DarkTheme, DefaultTheme, ThemeProvider } from 'expo-router/react-naviga
 import { SleepReminderSync } from '@/features/sleep';
 import { AppServicesProvider } from '@/lib/app-services';
 import { AccountProviders } from '@/lib/auth';
+import { AppErrorBoundary, ObservabilityRoot, initSentry } from '@/lib/observability';
+import { PurchasesProvider } from '@/lib/purchases';
 import { useThemeColors } from '@/theme/tokens';
 
 SplashScreen.preventAutoHideAsync().catch(() => undefined);
+// As early as possible; a no-op without EXPO_PUBLIC_SENTRY_DSN (D20/D38).
+initSentry();
 
 function BootScreen({ error }: { error?: Error }) {
   useEffect(() => {
@@ -79,15 +83,20 @@ function Navigation() {
 
 export default function RootLayout() {
   return (
-    <AppServicesProvider
-      renderBoot={(state) => (
-        <BootScreen error={state.status === 'error' ? state.error : undefined} />
-      )}
-    >
-      <AccountProviders>
-        <SleepReminderSync />
-        <Navigation />
-      </AccountProviders>
-    </AppServicesProvider>
+    <AppErrorBoundary>
+      <AppServicesProvider
+        renderBoot={(state) => (
+          <BootScreen error={state.status === 'error' ? state.error : undefined} />
+        )}
+      >
+        <AccountProviders>
+          <PurchasesProvider>
+            <SleepReminderSync />
+            <ObservabilityRoot />
+            <Navigation />
+          </PurchasesProvider>
+        </AccountProviders>
+      </AppServicesProvider>
+    </AppErrorBoundary>
   );
 }

@@ -20,3 +20,28 @@ jest.mock('expo-audio', () => {
     setAudioModeAsync: jest.fn(async () => undefined),
   };
 });
+
+// clerk-js opens a MessagePort at import time, which keeps Jest from exiting. Tests run
+// without a Clerk key (guest), so signed-out stand-ins are all the app ever reaches.
+jest.mock('@clerk/expo', () => {
+  const signedOut = {
+    isLoaded: true,
+    isSignedIn: false,
+    userId: null,
+    getToken: async () => null,
+    signOut: async () => undefined,
+  };
+  return {
+    ClerkProvider: ({ children }: { children: unknown }) => children,
+    useAuth: () => signedOut,
+    useUser: () => ({ isLoaded: true, isSignedIn: false, user: null }),
+    useSignIn: () => ({ isLoaded: true, signIn: null, setActive: async () => undefined }),
+    useSignUp: () => ({ isLoaded: true, signUp: null, setActive: async () => undefined }),
+    useSSO: () => ({ startSSOFlow: async () => ({}) }),
+    isClerkAPIResponseError: () => false,
+  };
+});
+jest.mock('@clerk/expo/token-cache', () => ({ tokenCache: undefined }));
+jest.mock('@clerk/expo/apple', () => ({
+  useSignInWithApple: () => ({ startAppleAuthenticationFlow: async () => ({}) }),
+}));

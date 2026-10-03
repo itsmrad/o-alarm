@@ -6,6 +6,7 @@ import { Section, Separator } from '@/components/section';
 import { confirm } from '@/features/account/confirm';
 import { useAccount } from '@/lib/auth';
 import { useAppServices } from '@/lib/app-services';
+import { deleteBillingData } from '@/lib/purchases';
 import { useSync, wipeLocalData } from '@/lib/sync';
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -57,6 +58,9 @@ export function DataSection() {
     if (!second) return;
     setBusy('delete');
     try {
+      // Billing half first, while the session is valid. Best effort: a failure here must
+      // never block deleting the account data (the store subscription is separate anyway).
+      await deleteBillingData(account.getToken).catch(() => undefined);
       await cloud.deleteMyData();
       await account.deleteUser();
     } catch (error) {
