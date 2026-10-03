@@ -427,11 +427,15 @@ enabled = true
 # format_options = "{\"keywordCase\":\"upper\",\"indent\":2,\"maxWidth\":180,\"commaStyle\":\"trailing\"}"
 
 # RevenueCat cannot send a Supabase JWT (it sends the REVENUECAT_WEBHOOK_AUTH shared secret), and
-# delete-account-cleanup verifies the caller's Clerk token itself (see its index.ts).
+# delete-account-cleanup and ai-insights verify the caller's Clerk token themselves (see their index.ts).
 [functions.revenuecat-webhook]
 enabled = true
 verify_jwt = false
 
 [functions.delete-account-cleanup]
+enabled = true
+verify_jwt = false
+
+[functions.ai-insights]
 enabled = true
 verify_jwt = false
