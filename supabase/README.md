@@ -35,7 +35,8 @@ Edge Functions (OpenRouter, RevenueCat webhook) are not part of this change; the
 | `ai_insights` | **service role only** | `type`, period, `structured jsonb`, `explanation`, `model`. Client read-only. |
 | `entitlements` | **service role only** | RevenueCat mirror (`pro`). Client read-only. |
 | `sync_state` | client | Per-device pull cursor, `guest_migrated_at`. |
-| `events` | client, **append-only** | `name` is checked against the 15 PRODUCT.md key events. |
+| `events` | client, **append-only** | `name` is checked against the PRODUCT.md key events + `alarm_deleted` (D26). |
+| `guest_migrations` | RPC only | One-time guest→account upload window per account (D22). |
 | `data_export_requests` | client creates, service role progresses | Async export jobs. |
 
 **Why no `alarm_schedules` table:** D9 gives every alarm exactly one wall-clock rule, so a separate
@@ -73,8 +74,13 @@ instants already have their own table (`alarm_occurrences`). Split it out only i
   or function (grants revoked, default privileges changed) — and no policies.
 - Clients get `select, insert, update` only (`events`: `select, insert`; `ai_insights`, `entitlements`,
   `missions`: `select`). `service_role` (Edge Functions) bypasses RLS.
-- Pro gating is **not** enforced in SQL (the brief makes cloud sync a Pro feature, but that is a product
-  call; an `entitlements`-based check can be added to the write policies later).
+- **Pro gating of sync writes (D22):** restrictive insert/update policies on every client-writable sync
+  table (all of the above except `users` and `data_export_requests`) require `can_write_sync()` =
+  `has_entitlement('pro')` (active, unexpired `entitlements` row) **or** an open guest→account migration
+  window. The window is opened once per account by `begin_guest_migration(device_id)` (idempotent,
+  resumable for `guest_migration_window()` = 7 days) and closed by `complete_guest_migration()`; state lives
+  in the RPC-only `guest_migrations` table. Reads, `export_my_data()` and `delete_my_data()` stay open to
+  every signed-in user, so a lapsed subscriber never loses access to their data.
 - `export_my_data()` returns the caller's rows as one jsonb document; `delete_my_data()` hard-deletes the
   caller's `users` row (cascade removes everything, events included) and returns per-table counts. Both are
   `SECURITY DEFINER`, scoped to the JWT `sub`, raise for callers without one, and are not executable by anon.
