@@ -14,7 +14,6 @@ struct AlarmEngineMetadata: AlarmMetadata {}
 struct AlarmEngineStopIntent: LiveActivityIntent {
   static let title: LocalizedStringResource = "Stop Alarm"
   static let isDiscoverable: Bool = false
-  static let openAppWhenRun: Bool = false
 
   @Parameter(title: "Alarm ID")
   var alarmID: String
@@ -43,6 +42,8 @@ struct AlarmEngineStopIntent: LiveActivityIntent {
 struct AlarmEngineOpenIntent: LiveActivityIntent {
   static let title: LocalizedStringResource = "Open O-Alarm"
   static let isDiscoverable: Bool = false
+  // Deprecated in iOS 26 for `supportedModes`, but it is the form AlarmKit's own sample uses
+  // for its "Open" button; keep the proven path until a device build shows otherwise.
   static let openAppWhenRun: Bool = true
 
   @Parameter(title: "Alarm ID")
@@ -71,7 +72,6 @@ struct AlarmEngineOpenIntent: LiveActivityIntent {
 struct AlarmEngineSnoozeIntent: LiveActivityIntent {
   static let title: LocalizedStringResource = "Snooze Alarm"
   static let isDiscoverable: Bool = false
-  static let openAppWhenRun: Bool = false
 
   @Parameter(title: "Alarm ID")
   var alarmID: String

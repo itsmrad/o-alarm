@@ -156,7 +156,128 @@ resource name as `sound.id`; anything unresolvable falls back to the default ala
 
 ## iOS
 
-<!-- IOS: owned by the iOS implementation. -->
+iOS 26+ only, **AlarmKit only** (D4): no notification fallback. AlarmKit alarms ring through
+Silent mode and Focus, on the lock screen, with the app killed. The only Info.plist key is
+`NSAlarmKitUsageDescription` (set by the config plugin; AlarmKit refuses to schedule without
+it). No entitlement, background mode or widget extension is needed: the engine has no
+countdown presentation, which is the only AlarmKit feature that requires a widget.
+
+### Architecture
+
+```
+ios/
+  AlarmEngineModule.swift   Expo module: parses args, forwards to the core, maps errors to codes
+  AlarmEngineCore.swift     actor: mirror, ringing record, event log, AlarmKit glue, observers
+  AlarmEngineIntents.swift  App Intents on the alert: Stop, Open, Snooze (+ AlarmMetadata)
+  AlarmEngineModels.swift   wire/persisted types (field names = AlarmEngine.types.ts)
+  AlarmEngineStore.swift    JSON file persistence
+  AlarmEngineTime.swift     ISO instants, civil dates, D9 wall-clock resolution, id → UUID
+```
+
+- **One AlarmKit alarm per schedule id**, always `Alarm.Schedule.fixed(date)`. JS keeps two
+  occurrences ahead per alarm (`<alarmId>@<YYYY-MM-DD>`), so a weekly `.relative` schedule per
+  occurrence would ring twice; fixed dates can't duplicate. The AlarmKit id is a
+  SHA-256-derived UUID of the schedule id, so `schedule` is an upsert: cancel that UUID, then
+  schedule it again. Re-scheduling an id never creates a second alarm.
+- **Native mirror (D10):** `Application Support/AlarmEngine/state.json` holds every spec
+  verbatim (all fields, including `wallClock`) plus `scheduledAt`. It also holds the
+  ringing record, the observed-event log and the snooze, wake-check and retrigger counters.
+  Writes are atomic with `completeUntilFirstUserAuthentication` protection. If the file is
+  unreadable (before the first unlock after a reboot), the engine never overwrites it. Calls
+  that need it reject `UNKNOWN`, and readiness shows a warning. A corrupt file is moved aside
+  and logged as `schedule_failed` / `mirror_corrupt_reset`.
+- **`getScheduled`** cross-checks the mirror with `AlarmManager.alarms`. AlarmKit deletes a
+  one-shot alarm after it fires. So an entry that is gone and past its fire time has fired:
+  it leaves the list, after its next recurrence is armed. An entry that is gone before its
+  fire time is re-armed, or dropped with `schedule_failed` if AlarmKit refuses. An alarm
+  that is alerting right now is not listed.
+- **Threading:** module calls, App Intents, the `alarmUpdates` observer and the clock
+  observers all go through one actor. An async lock serializes them across `await`, so an
+  intent racing a JS call can't interleave an upsert.
+- **Ringing:** `alarmUpdates` reports `.alerting`. The engine then persists the ringing
+  record (`getActiveRinging`), logs `trigger_received` once per ring and emits `onTrigger`
+  if JS is listening. A ringing record nobody resolves, and that isn't alerting, expires
+  after 2 h.
+- **Alert buttons:** Stop is always shown. On 26.1+ the system draws it; on 26.0 it uses the
+  deprecated `stopButton` form. The secondary button is **Open** for `hasMissions`,
+  `wake_check` and `retrigger`. Otherwise it is **Snooze** while `snooze.enabled` and
+  snoozes remain, else nothing. Both are `.custom` App Intents.
+- **Intents** run in the app process (AlarmKit launches it in the background if needed), so
+  they work with JS dead. Events still go to the log, and to JS when it is alive.
+  - *Stop* (system button): logs `stopped_from_system_ui`. If the alarm `hasMissions` or
+    `wakeCheck`, it arms `<occurrenceKey>#retrigger-<n>` at now + 1 min, logs `retriggered`,
+    keeps the ringing record (the mission is still owed) and emits `onStop
+    {missionCompleted: false}`. Otherwise the ring is over (`missionCompleted: true`).
+  - *Open*: stops the system alert and keeps or creates the ringing record, so JS routes to
+    `/ringing`. It arms a safety retrigger at now + 3 min that `dismiss`/`snooze` cancel.
+  - *Snooze*: arms `<occurrenceKey>#snooze-<n>` at now + `durationMin` and stops the alert.
+    If the limit was already hit, it re-rings in 1 min instead of going silent.
+  - Retriggers are bounded at **5 per occurrence**. When the engine stops an alarm itself
+    (in-app dismiss/snooze, Open), it marks the id for 10 min, so a Stop intent the system
+    runs for that stop isn't treated as the user's Stop button.
+- **`snooze` / `dismiss`** guard `NOT_RINGING`. They accept the ringing id, an id it
+  superseded in the same occurrence (a retrigger that fired mid-mission), or any id AlarmKit
+  reports as alerting. `snooze` enforces `SNOOZE_LIMIT`. `dismiss` with `wakeCheckAt` arms
+  `<occurrenceKey>#wake-check-<n>` first (D13). If that fails, the alarm keeps ringing. Then
+  it stops the alert, cancels pending retriggers and resets the counters.
+- **Recurrence (D28):** when an `alarm` occurrence rings, the engine arms the next date
+  after the alarm's **latest** mirrored `alarm` entry. That happens on alerting, on an intent,
+  or when the mirror finds it fired. It uses the same weekdays, time, zone policy and
+  `<alarmId>@<YYYY-MM-DD>` id as JS, so reconcile replaces it and never duplicates it. Each
+  fired id re-arms once. A failure logs `schedule_failed` with the reason.
+- **Floating alarms (D9):** on every module start and on `NSSystemTimeZoneDidChange` or a
+  significant time change, the engine recomputes `wallClock.timeZone == null` entries in the
+  device zone. It ports `resolveWallClock`: a DST gap fires at the transition instant, an
+  overlap at the first occurrence. Each change re-arms the entry and logs
+  `tz_change_rescheduled`. An entry that lands in the past logs `missed` and arms the next
+  recurrence. Fixed-zone, snooze, wake-check and retrigger instants never move.
+- **Event log:** append-only, persisted. `drainObservedEvents` returns the same events until
+  `ackObservedEvents` removes them; unknown ids are ignored. Capped at 500, dropping the
+  oldest.
+- **Preview:** `previewAlarm` arms a real AlarmKit alarm 5 s out under a random UUID. It is
+  never listed by `getScheduled` and never retriggers or re-arms.
+
+### Guarantees vs OS limits
+
+- **Stop is not mission-gated (D14).** AlarmKit's Stop always silences the alert. The engine
+  can only re-ring (bounded) and keep the mission owed. Diagnostics shows this as a
+  `platform_limitation` warning.
+- **Vibration, volume and escalation belong to AlarmKit.** `vibration`, `escalation` and
+  `important` are stored and round-tripped, but iOS gives no control over haptics, volume
+  ramp or loudness. The system alarm behavior applies.
+- **Custom sounds:** `sound.kind: 'custom'` plays `AlertSound.named(<id>[.caf|.wav|.aiff|.m4a|.mp3])`
+  if the file is in the app bundle or `Library/Sounds`. Otherwise the default sound plays and
+  readiness warns ("Custom sound unavailable"). `system` and `default` both use AlarmKit's
+  default sound.
+- **Floating alarms with the app never running:** iOS doesn't wake the app on a zone change,
+  so a fixed-date alarm keeps its instant until O-Alarm next runs. That happens on any launch,
+  including one triggered by an alarm intent. It then recomputes and logs
+  `tz_change_rescheduled`. The next ring after a zone change can therefore come at the old
+  zone's time.
+- **Recurrence without the app** relies on the two-ahead buffer plus a native re-arm when a
+  ring is seen. That covers alerting while the process is alive, any button intent, or the
+  mirror check at the next launch. If both buffered occurrences ring with no button pressed
+  and the app never runs, the chain ends after two days.
+- **Snooze, wake check and retrigger are real AlarmKit alarms (D13).** They ring with the app
+  killed.
+- **AlarmKit doesn't expose when a missed alarm (device off) would have fired.** Only
+  zone recomputation reports `missed`.
+
+### iOS notes for the device matrix
+
+| # | iOS specifics |
+|---|---|
+| 1–4 | The AlarmKit alert (full screen when locked, banner when unlocked). Row 3: tapping **Open** must land on `/ringing`. |
+| 5, 23 | AlarmKit keeps alarms across reboot/update; no restore event is logged on iOS. Before the first unlock the mirror is unreadable, and Diagnostics shows "Alarm storage locked". |
+| 6 | Record what AlarmKit does with a fire time that passed while the phone was off. |
+| 8 | `schedule` rejects `PERMISSION_DENIED` when AlarmKit is `denied` or `notDetermined` (and the prompt was refused). Diagnostics shows the blocking `alarms` item. |
+| 9, 11, 24 | Android-only. |
+| 12 | Killed app: the alarm keeps the old instant until O-Alarm next runs (see above). Opening the app re-arms it and logs `tz_change_rescheduled`. |
+| 14 | Recomputation happens natively on launch and on zone/time change. Compare against the JS planner. |
+| 19 | The **Snooze** button appears only for alarms without missions. After `maxCount`, the snooze alert has no Snooze button. |
+| 21 | Press Stop on a mission alarm: a `retrigger` rings about 1 min later, up to 5 times. Opening the app shows `/ringing`. |
+| 22 | Kill the app before the first ring, and press Stop each morning. Check the mirror keeps two future `@date` entries. |
+| 25 | The alarm sound is AlarmKit's: it keeps ringing regardless of JS. |
 
 ## Real-device test matrix
 
