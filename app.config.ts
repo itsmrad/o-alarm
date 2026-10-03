@@ -55,6 +55,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
         motionPermission: 'O-Alarm uses motion to confirm you are up and moving.',
       },
     ],
+    // D4/D5: native alarm engine (AlarmKit usage string, App Intents; Android via module manifest).
+    './modules/alarm-engine/app.plugin.js',
     // Bedtime / wind-down / check-in reminders only. Alarms never use notifications on iOS (D4).
     'expo-notifications',
     'expo-secure-store',

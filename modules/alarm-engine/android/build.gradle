@@ -16,3 +16,10 @@ android {
     abortOnError false
   }
 }
+
+dependencies {
+  // JVM unit tests for the platform-independent engine (store, recurrence, restore, snooze).
+  testImplementation 'junit:junit:4.13.2'
+  // Real org.json on the JVM (android.jar only ships stubs).
+  testImplementation 'org.json:json:20240303'
+}

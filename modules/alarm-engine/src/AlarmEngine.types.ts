@@ -123,7 +123,11 @@ export type ObservedEngineEventType =
   | 'stopped_from_system_ui'
   | 'retriggered'
   | 'schedule_restored_after_boot'
-  | 'tz_change_rescheduled';
+  | 'tz_change_rescheduled'
+  /** The fire instant passed without ringing (powered off, recomputed into the past). */
+  | 'missed'
+  /** A native (re-)arm failed while JS was not running (boot/tz restore, next occurrence). */
+  | 'schedule_failed';
 
 /**
  * Something the native layer did or saw while JS may not have been running.
@@ -137,4 +141,6 @@ export interface ObservedEngineEvent {
   alarmId: string;
   occurrenceKey: string;
   at: string;
+  /** Error code or reason, when the type alone doesn't explain it (e.g. `schedule_failed`). */
+  detail?: string;
 }
