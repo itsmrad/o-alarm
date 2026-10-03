@@ -478,3 +478,203 @@ describe('reliability ledger: missed occurrences', () => {
     t.close();
   });
 });
+
+describe('Wake Check (D13)', () => {
+  const WAKE = {
+    enabled: true,
+    delayMin: 5,
+    responseWindowSec: 60,
+    method: 'confirm' as const,
+    missionId: null,
+    maxRetriggers: 2,
+  };
+  const KEY = (alarm: Alarm) => `${alarm.id}@2026-10-02`;
+  const at = (minutes: number, seconds = 0) =>
+    new Date(Date.parse(FIRE) + minutes * 60_000 + seconds * 1000).toISOString();
+  const prompt = (alarm: Alarm): RingingState =>
+    ringingOf(alarm, { scheduleId: `${KEY(alarm)}#wake-check-1`, kind: 'wake_check', at: at(5) });
+  const retrigger = (alarm: Alarm, attempt: number): RingingState =>
+    ringingOf(alarm, { scheduleId: `${KEY(alarm)}#retrigger-${attempt}`, kind: 'retrigger' });
+  const count = (t: ReturnType<typeof setup>, type: string) =>
+    t.types().filter((x) => x === type).length;
+
+  async function armed() {
+    const t = setup();
+    const { alarm } = await t.alarms.save(draft({ wakeCheck: WAKE }));
+    t.ring.start();
+    await flush();
+    t.setNow(FIRE);
+    t.engine.ringing = ringingOf(alarm);
+    await t.ring.dismiss(KEY(alarm), 'button');
+    return { t, alarm };
+  }
+
+  /** The prompt alarm rings (in-app trigger). */
+  async function promptRings(t: ReturnType<typeof setup>, alarm: Alarm, base = 0) {
+    t.setNow(at(base + 5));
+    t.engine.ringing = { ...prompt(alarm), at: at(base + 5) };
+    t.engine.emit('trigger', t.engine.ringing);
+    await flush();
+  }
+
+  it('dismissal schedules the prompt and the native re-trigger at the deadline', async () => {
+    const { t, alarm } = await armed();
+    const byId = new Map(t.engine.entries.map((e) => [e.id, e]));
+    expect(byId.get(`${KEY(alarm)}#wake-check-1`)).toMatchObject({
+      kind: 'wake_check',
+      fireAt: at(5),
+    });
+    expect(byId.get(`${KEY(alarm)}#retrigger-1`)).toMatchObject({
+      kind: 'retrigger',
+      fireAt: at(6),
+      snooze: { enabled: false, maxCount: 0 },
+    });
+    expect(byId.get(`${KEY(alarm)}#retrigger-1`)?.wallClock).toBeUndefined();
+    expect(t.wakeChecks.state(KEY(alarm))).toMatchObject({ status: 'armed', attempt: 1 });
+    expect(count(t, 'wake_check_started')).toBe(1);
+    expect(t.wokeUp).toEqual([]); // not up yet: the check is still to come
+    // Reconcile keeps both follow-ups (they belong to an active alarm).
+    await t.ring.sync('foreground');
+    expect(t.engine.entries.some((e) => e.id === `${KEY(alarm)}#retrigger-1`)).toBe(true);
+    t.close();
+  });
+
+  it('pass: cancels the re-trigger, stops the prompt, logs once and ends the wake-up', async () => {
+    const { t, alarm } = await armed();
+    await promptRings(t, alarm);
+    expect(t.prompts.map((p) => p.kind)).toEqual(['wake_check']);
+    expect(t.shown).toEqual([]);
+    expect(t.wakeChecks.state(KEY(alarm))).toMatchObject({ status: 'pending_verification' });
+
+    t.setNow(at(5, 30));
+    await expect(
+      t.ring.passWakeCheck({ alarmId: alarm.id, occurrenceKey: KEY(alarm) }),
+    ).resolves.toBe('passed');
+    expect(t.engine.entries.some((e) => e.kind === 'retrigger')).toBe(false);
+    expect(t.engine.ringing).toBeNull();
+    expect(count(t, 'wake_check_passed')).toBe(1);
+    expect(count(t, 'alarm_dismissed')).toBe(1); // the prompt is not an alarm dismissal
+    expect(count(t, 'alarm_trigger_received')).toBe(0); // nor an alarm trigger
+    expect(t.wokeUp).toEqual([KEY(alarm)]);
+    // A repeated pass is a no-op.
+    await expect(
+      t.ring.passWakeCheck({ alarmId: alarm.id, occurrenceKey: KEY(alarm) }),
+    ).resolves.toBe('not_pending');
+    expect(count(t, 'wake_check_passed')).toBe(1);
+    t.close();
+  });
+
+  it('a pass after the deadline is a fail and the re-trigger stays', async () => {
+    const { t, alarm } = await armed();
+    await promptRings(t, alarm);
+    t.setNow(at(6, 1));
+    await expect(
+      t.ring.passWakeCheck({ alarmId: alarm.id, occurrenceKey: KEY(alarm) }),
+    ).resolves.toBe('late');
+    expect(t.engine.entries.some((e) => e.id === `${KEY(alarm)}#retrigger-1`)).toBe(true);
+    expect(count(t, 'wake_check_failed')).toBe(1);
+    t.close();
+  });
+
+  it('no response: the re-trigger rings as a full alarm and re-arms until maxRetriggers', async () => {
+    const { t, alarm } = await armed();
+    for (const attempt of [1, 2]) {
+      // Each cycle is armed at the previous dismissal: 07:00, then 07:06.
+      const base = (attempt - 1) * 6;
+      await promptRings(t, alarm, base);
+      t.setNow(at(base + 6));
+      await expect(
+        t.ring.timeoutWakeCheck({ alarmId: alarm.id, occurrenceKey: KEY(alarm) }),
+      ).resolves.toBe(true);
+      expect(t.engine.ringing).toBeNull(); // prompt stopped so the re-trigger can ring
+
+      t.engine.ringing = retrigger(alarm, attempt);
+      t.engine.emit('trigger', t.engine.ringing);
+      await flush();
+      expect(t.shown.at(-1)?.kind).toBe('retrigger');
+      expect(t.wakeChecks.state(KEY(alarm))).toMatchObject({ status: 'retriggered', attempt });
+      await expect(t.ring.snooze(t.engine.ringing.scheduleId)).rejects.toMatchObject({
+        code: 'SNOOZE_LIMIT',
+      });
+      await t.ring.dismiss(retrigger(alarm, attempt).scheduleId, 'button');
+    }
+    const retriggered = t.alarms.events.list({ type: 'alarm_retriggered' });
+    expect(retriggered.map((e) => e.payload).reverse()).toEqual([
+      { reason: 'wake_check_failed', attempt: 1 },
+      { reason: 'wake_check_failed', attempt: 2 },
+    ]);
+    expect(count(t, 'wake_check_failed')).toBe(2);
+    expect(count(t, 'wake_check_started')).toBe(2);
+    // After the 2nd re-ring the limit is reached: no third check, the wake-up ends.
+    expect(t.engine.entries.some((e) => e.id === `${KEY(alarm)}#retrigger-3`)).toBe(false);
+    expect(t.wakeChecks.state(KEY(alarm))).toMatchObject({ status: 'retriggered', attempt: 2 });
+    expect(t.wokeUp).toEqual([KEY(alarm)]);
+    t.close();
+  });
+
+  it('resumes after an app kill from wake_checks + observed events, without duplicates', async () => {
+    const { t, alarm } = await armed();
+    // The app is killed: a fresh service graph over the same database and engine.
+    const wakeChecks = createWakeCheckService({
+      db: t.db,
+      deviceId: 'd1',
+      engine: t.engine,
+      getAlarm: t.alarms.get,
+      clock: () => new Date(at(7)),
+    });
+    const ring = createRingLifecycle({
+      engine: t.engine,
+      alarms: t.alarms,
+      ledger: t.ledger,
+      wakeChecks,
+      showRinging: () => undefined,
+      showWakeCheck: () => undefined,
+      clock: () => new Date(at(7)),
+      timeZone: () => NY,
+    });
+    expect(wakeChecks.state(KEY(alarm))).toMatchObject({ status: 'armed', attempt: 1 });
+
+    const batch = [
+      observed(alarm, 'trigger_received', 'w1', at(5), `${KEY(alarm)}#wake-check-1`),
+      observed(alarm, 'trigger_received', 'w2', at(6), `${KEY(alarm)}#retrigger-1`),
+    ];
+    t.engine.observed = batch.map((e) => ({ ...e }));
+    t.setNow(at(7));
+    await ring.sync('start');
+    expect(wakeChecks.state(KEY(alarm))).toMatchObject({ status: 'retriggered', attempt: 1 });
+    const before = t.types();
+    expect(before.filter((x) => x === 'wake_check_failed')).toHaveLength(1);
+    expect(before.filter((x) => x === 'alarm_retriggered')).toHaveLength(1);
+
+    t.engine.observed = batch.map((e) => ({ ...e })); // replay (crash before ack)
+    await ring.sync('foreground');
+    expect(t.types()).toEqual(before);
+    t.close();
+  });
+
+  it('an answer window that ended in the background times out on the next sync', async () => {
+    const { t, alarm } = await armed();
+    await promptRings(t, alarm);
+    t.setNow(at(6, 5));
+    await t.ring.sync('foreground');
+    expect(t.wakeChecks.state(KEY(alarm))).toMatchObject({ status: 'failed' });
+    expect(t.engine.ringing).toBeNull();
+    t.close();
+  });
+
+  it('arming is idempotent and test rings / disabled checks never arm', async () => {
+    const { t, alarm } = await armed();
+    const armedState = t.wakeChecks.state(KEY(alarm));
+    expect(t.wakeChecks.planArm(ringingOf(alarm))).toBeNull(); // already armed
+    if (armedState.status === 'armed') await t.wakeChecks.commitArm(ringingOf(alarm), armedState);
+    expect(t.engine.entries.filter((e) => e.kind === 'retrigger')).toHaveLength(1);
+    expect(count(t, 'wake_check_started')).toBe(1);
+
+    expect(
+      t.wakeChecks.planArm({ ...ringingOf(alarm), occurrenceKey: `${alarm.id}#test-1` }),
+    ).toBeNull();
+    const { alarm: plain } = await t.alarms.save(draft());
+    expect(t.wakeChecks.planArm(ringingOf(plain))).toBeNull();
+    t.close();
+  });
+});

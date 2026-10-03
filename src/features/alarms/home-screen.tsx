@@ -1,5 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { Stack, router } from 'expo-router';
+import { Stack, router, useIsFocused } from 'expo-router';
+import { useEffect } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
 import { Button } from '@/components/button';
@@ -26,7 +27,18 @@ import { confirmWeakening, detectWeakening } from './important-guard';
 
 export function HomeScreen() {
   const alarms = useAlarms();
-  const { alarms: service } = useAppServices();
+  const { alarms: service, ring } = useAppServices();
+  const focused = useIsFocused();
+
+  // Morning check-in queued by the final wake-up: shown once the alarm screens are gone.
+  useEffect(() => {
+    if (!focused) return;
+    const open = () => {
+      if (ring.takeCheckIn()) router.push('/checkin');
+    };
+    open();
+    return ring.subscribe(open);
+  }, [focused, ring]);
   const now = useNow();
   const timeZone = deviceTimeZone();
   const next = nextAlarmOccurrence(alarms, now, timeZone);

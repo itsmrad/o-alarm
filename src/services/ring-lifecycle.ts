@@ -74,6 +74,7 @@ export function createRingLifecycle(deps: RingLifecycleDeps) {
   let queue: Promise<unknown> = Promise.resolve();
   let lastZone = timeZone();
   let ringingScreenOpen = false;
+  let checkInQueued = false;
   let lastSync: SyncReport | null = null;
   let lastReconcile: { at: string; result: ReconcileResult } | null = null;
 
@@ -299,6 +300,19 @@ export function createRingLifecycle(deps: RingLifecycleDeps) {
     /** The ringing screen registers itself so triggers don't stack a second copy. */
     setRingingScreenOpen(open: boolean): void {
       ringingScreenOpen = open;
+    },
+
+    /** After the final wake-up: offer the morning check-in once the alarm UI is gone. */
+    queueCheckIn(): void {
+      checkInQueued = true;
+      notify();
+    },
+
+    /** True once per queued check-in (Home calls this when it regains focus). */
+    takeCheckIn(): boolean {
+      const queued = checkInQueued;
+      checkInQueued = false;
+      return queued;
     },
 
     getLastSync: (): SyncReport | null => lastSync,

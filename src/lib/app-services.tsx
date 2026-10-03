@@ -8,6 +8,8 @@ import { openAppDatabase } from '@/db/client';
 import { getOrCreateDeviceId } from '@/db/repositories/device';
 import type { AppDatabase } from '@/db/types';
 import { resolveEngine, type AlarmEngine } from '@/engine';
+// sleep-runtime, not the feature index: the index re-exports hooks that import this file.
+import { endActiveSleepSession, shouldPromptCheckIn } from '@/features/sleep/sleep-runtime';
 import { createReliabilityLedger, type ReliabilityLedger } from '@/services/reliability-ledger';
 import { createRingLifecycle, type RingLifecycle } from '@/services/ring-lifecycle';
 import { createWakeCheckService, type WakeCheckService } from '@/services/wake-check';
@@ -51,6 +53,18 @@ async function boot(): Promise<AppServices> {
       router.push({ pathname: '/ringing', params: { scheduleId: event.scheduleId } }),
     showWakeCheck: (event) =>
       router.push({ pathname: '/wake-check', params: { scheduleId: event.scheduleId } }),
+    // Final wake-up (dismissed without Wake Check, or passed it): close the night and
+    // offer the morning check-in. Best effort; never on the alarm's critical path.
+    onWokeUp: (_ring, at) => {
+      const sleep = { db, deviceId };
+      endActiveSleepSession(at, sleep)
+        .then(() => shouldPromptCheckIn(at, sleep))
+        .then((prompt) => {
+          // Opened by Home once the alarm screens have closed (no navigation race).
+          if (prompt) ring.queueCheckIn();
+        })
+        .catch(() => undefined);
+    },
   });
   return { engine, alarms, ledger, ring, wakeChecks, db, deviceId };
 }

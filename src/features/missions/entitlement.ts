@@ -1,13 +1,14 @@
-import type { MissionEntitlement } from '@/domain/missions-gating';
+import { useMemo } from 'react';
 
-const FREE: MissionEntitlement = { pro: false };
+import type { MissionEntitlement } from '@/domain/missions-gating';
+import { useEntitlement } from '@/lib/entitlements';
 
 /**
- * The `pro` entitlement as missions and Wake Check see it (D18). Single swap point:
- * `@/lib/entitlements` (account-sync) is not on mvp yet, so this reads as free. When it
- * lands, return `{ pro: useEntitlement().tier === 'pro' }` here. Unknown is always free:
- * Pro options degrade at ring time and never block a dismissal.
+ * The `pro` entitlement as missions and Wake Check see it (D18), from the cached local
+ * snapshot (never waits on the network). Unknown/lapsed reads as free: Pro options
+ * degrade at ring time and never block a dismissal.
  */
 export function useMissionEntitlement(): MissionEntitlement {
-  return FREE;
+  const pro = useEntitlement().tier === 'pro';
+  return useMemo(() => ({ pro }), [pro]);
 }
