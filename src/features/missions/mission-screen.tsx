@@ -1,4 +1,4 @@
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { ScrollView, Text, View } from 'react-native';
 
@@ -9,6 +9,9 @@ import { Section, Separator } from '@/components/section';
 import type { MissionAttemptResult, MissionStep } from '@/domain/missions';
 import type { MissionChainEvent } from '@/domain/missions-chain';
 
+import { parseMissionGateParams } from '@/features/ringing/mission-gate';
+
+import { GatedMission } from './gated-mission';
 import { MissionChainEditor } from './mission-chain-editor';
 import { MissionChainRunner } from './mission-chain-runner';
 
@@ -22,11 +25,17 @@ const describeEvent = (e: MissionChainEvent) =>
     .map(([k, v]) => `${k}=${v}`)
     .join(' ')}`;
 
+/** `/mission`: the ringing alarm's gate when opened with gate params, else the playground. */
+export function MissionScreen() {
+  const params = parseMissionGateParams(useLocalSearchParams());
+  return params ? <GatedMission params={params} /> : <MissionPlayground />;
+}
+
 /**
  * "Try mission" playground: build a chain, flip a simulated Pro entitlement, run it
  * standalone and inspect the events the runner emitted. Nothing here dismisses an alarm.
  */
-export function MissionScreen() {
+function MissionPlayground() {
   const [steps, setSteps] = useState<MissionStep[]>([{ missionId: 'math', config: {} }]);
   const [pro, setPro] = useState(true);
   const [run, setRun] = useState<Run>({ status: 'idle' });

@@ -32,7 +32,7 @@ const subtitleFor = (ringing: RingingState) => {
   if (ringing.occurrenceKey.includes('#test-')) return 'Test alarm';
   if (ringing.kind === 'snooze') return `Snoozed ${ringing.snoozeCount}×`;
   if (ringing.kind === 'wake_check') return 'Wake Check';
-  if (ringing.kind === 'retrigger') return 'Ringing again';
+  if (ringing.kind === 'retrigger') return 'Ringing again — Wake Check missed';
   return null;
 };
 
@@ -87,15 +87,30 @@ export function RingingScreen() {
     if (view.status === 'ended' && focused) close();
   }, [view.status, focused]);
 
+  // A Wake Check prompt has its own screen.
+  const isPrompt = view.status === 'ringing' && view.ringing.kind === 'wake_check';
+  useEffect(() => {
+    if (isPrompt && focused) router.replace('/wake-check');
+  }, [isPrompt, focused]);
+
   const ringing = view.status === 'ringing' ? view.ringing : null;
   const alarm = view.status === 'ringing' ? view.alarm : null;
-  const policy = alarm?.snooze ?? DEFAULT_SNOOZE;
+  // Re-rings after a missed Wake Check are never snoozable.
+  const policy =
+    ringing?.kind === 'retrigger' || ringing?.kind === 'wake_check'
+      ? { ...DEFAULT_SNOOZE, enabled: false, maxCount: 0 }
+      : (alarm?.snooze ?? DEFAULT_SNOOZE);
 
   // Expo Go only: the native engine plays its own sound (never double-play).
   useRingingFeedback({
-    active: engine.kind === 'preview' && ringing !== null,
+    active: engine.kind === 'preview' && ringing !== null && !isPrompt,
+    // A mission is on top: duck so the user can concentrate; restored on return.
+    ducked: !focused,
     sound: alarm?.sound ?? { kind: 'default', id: null },
-    escalation: alarm?.escalation ?? { enabled: false, rampSeconds: 0 },
+    escalation:
+      ringing?.kind === 'retrigger'
+        ? { enabled: false, rampSeconds: 0 }
+        : (alarm?.escalation ?? { enabled: false, rampSeconds: 0 }),
     vibration: alarm?.vibration ?? true,
   });
 

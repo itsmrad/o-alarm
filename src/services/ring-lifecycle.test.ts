@@ -7,6 +7,7 @@ import { FakeAlarmEngine } from '@/engine/testing/fake-engine';
 
 import { MISSED_GRACE_MS, createReliabilityLedger } from './reliability-ledger';
 import { createRingLifecycle } from './ring-lifecycle';
+import { createWakeCheckService } from './wake-check';
 
 const NY = 'America/New_York';
 // Friday 2026-10-02 05:00 in New York; a weekday 07:00 alarm fires 11:00Z today.
@@ -31,12 +32,25 @@ function setup() {
     clock,
     newId,
   });
+  const wakeChecks = createWakeCheckService({
+    db,
+    deviceId: 'd1',
+    engine,
+    getAlarm: alarms.get,
+    clock,
+    newId,
+  });
   const shown: AlarmEngineEventPayload[] = [];
+  const prompts: AlarmEngineEventPayload[] = [];
+  const wokeUp: string[] = [];
   const ring = createRingLifecycle({
     engine,
     alarms,
     ledger,
+    wakeChecks,
     showRinging: (event) => shown.push(event),
+    showWakeCheck: (event) => prompts.push(event),
+    onWokeUp: (woke) => wokeUp.push(woke.occurrenceKey),
     clock,
     timeZone,
   });
@@ -48,6 +62,9 @@ function setup() {
     ledger,
     ring,
     shown,
+    prompts,
+    wokeUp,
+    wakeChecks,
     close,
     occurrences,
     setNow: (iso: string) => (now = new Date(iso)),

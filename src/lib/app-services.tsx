@@ -9,6 +9,7 @@ import { getOrCreateDeviceId } from '@/db/repositories/device';
 import { resolveEngine, type AlarmEngine } from '@/engine';
 import { createReliabilityLedger, type ReliabilityLedger } from '@/services/reliability-ledger';
 import { createRingLifecycle, type RingLifecycle } from '@/services/ring-lifecycle';
+import { createWakeCheckService, type WakeCheckService } from '@/services/wake-check';
 
 export interface AppServices {
   engine: AlarmEngine;
@@ -16,6 +17,7 @@ export interface AppServices {
   ledger: ReliabilityLedger;
   /** Ring/reconcile lifecycle; also the snooze/dismiss/mission hook point. */
   ring: RingLifecycle;
+  wakeChecks: WakeCheckService;
 }
 
 type BootState =
@@ -36,14 +38,18 @@ async function boot(): Promise<AppServices> {
     engineKind: engine.kind,
     getAlarm: alarms.get,
   });
+  const wakeChecks = createWakeCheckService({ db, deviceId, engine, getAlarm: alarms.get });
   const ring = createRingLifecycle({
     engine,
     alarms,
     ledger,
+    wakeChecks,
     showRinging: (event) =>
       router.push({ pathname: '/ringing', params: { scheduleId: event.scheduleId } }),
+    showWakeCheck: (event) =>
+      router.push({ pathname: '/wake-check', params: { scheduleId: event.scheduleId } }),
   });
-  return { engine, alarms, ledger, ring };
+  return { engine, alarms, ledger, ring, wakeChecks };
 }
 
 /**

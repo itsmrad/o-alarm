@@ -1,4 +1,4 @@
-import { deviceTimeZone, type AlarmService } from '@/db/alarm-service';
+import { deviceTimeZone, isTestOccurrence, type AlarmService } from '@/db/alarm-service';
 import type { OccurrenceRow } from '@/db/repositories/occurrences';
 import { canSnooze } from '@/domain';
 import {
@@ -15,6 +15,7 @@ import {
 import type { MissionGateParams } from '@/features/ringing/mission-gate';
 
 import type { ReliabilityLedger } from './reliability-ledger';
+import type { PassResult, WakeCheckService } from './wake-check';
 
 export type SyncReason = 'start' | 'foreground' | 'timezone' | 'ring_ended' | 'manual';
 
@@ -38,8 +39,16 @@ export interface RingLifecycleDeps {
   engine: AlarmEngine;
   alarms: AlarmService;
   ledger: ReliabilityLedger;
-  /** Opens the ringing screen. Not called while it is already open. */
+  wakeChecks: WakeCheckService;
+  /** Opens the ringing screen. Not called while an alarm screen is already open. */
   showRinging: (ring: AlarmEngineEventPayload) => void;
+  /** Opens the Wake Check prompt (a `wake_check` alarm rang). */
+  showWakeCheck: (ring: AlarmEngineEventPayload) => void;
+  /**
+   * The user is finally up: dismissed with no Wake Check to follow, or passed it.
+   * Sleep/check-in hooks hang off this; failures there never affect the alarm.
+   */
+  onWokeUp?: (ring: { alarmId: string; occurrenceKey: string }, at: Date) => void;
   clock?: () => Date;
   timeZone?: () => string;
 }
@@ -59,7 +68,7 @@ export interface RingLifecycleDeps {
 export function createRingLifecycle(deps: RingLifecycleDeps) {
   const clock = deps.clock ?? (() => new Date());
   const timeZone = deps.timeZone ?? deviceTimeZone;
-  const { engine, alarms, ledger } = deps;
+  const { engine, alarms, ledger, wakeChecks } = deps;
   const listeners = new Set<() => void>();
   let subscriptions: EngineSubscription[] = [];
   let queue: Promise<unknown> = Promise.resolve();
@@ -79,14 +88,26 @@ export function createRingLifecycle(deps: RingLifecycleDeps) {
 
   function show(ring: AlarmEngineEventPayload): void {
     if (ringingScreenOpen) return;
-    deps.showRinging(ring);
+    if (ring.kind === 'wake_check') deps.showWakeCheck(ring);
+    else deps.showRinging(ring);
+  }
+
+  function wokeUp(ring: { alarmId: string; occurrenceKey: string }, at: Date) {
+    if (isTestOccurrence(ring.occurrenceKey)) return;
+    try {
+      deps.onWokeUp?.(ring, at);
+    } catch {
+      // Never let a sleep/check-in hook break the alarm flow.
+    }
   }
 
   /** Drain → persist → ack. A crash before ack replays the same events: all no-ops. */
   async function ingest(): Promise<number> {
     const observed = await engine.drainObservedEvents();
     if (observed.length === 0) return 0;
-    for (const event of observed) ledger.recordObserved(event);
+    for (const event of observed) {
+      ledger.recordObserved(event, wakeChecks.onObserved(event));
+    }
     await engine.ackObservedEvents(observed.map((event) => event.id));
     return observed.length;
   }
@@ -107,6 +128,10 @@ export function createRingLifecycle(deps: RingLifecycleDeps) {
           show(event);
           serial(async () => {
             ledger.recordTrigger(event, event.at);
+            if (event.kind === 'wake_check') wakeChecks.onCheckDue(event, event.at);
+            if (event.kind === 'retrigger') {
+              ledger.recordRetrigger(event, event.at, wakeChecks.onRetrigger(event, event.at));
+            }
             await ingest();
           })
             .catch(() => undefined)
@@ -173,6 +198,7 @@ export function createRingLifecycle(deps: RingLifecycleDeps) {
         await step(async () => {
           report.ingested = await ingest();
         });
+        await step(() => wakeChecks.expireDue(clock()));
         // Never reconcile under a ringing alarm: its own entry is no longer "desired"
         // and must not be cancelled mid-ring. The sync after it ends catches up.
         if (!report.ringing) {
@@ -196,6 +222,10 @@ export function createRingLifecycle(deps: RingLifecycleDeps) {
       return serial(async () => {
         const ring = await requireRinging(scheduleId);
         const policy = alarms.get(ring.alarmId)?.snooze;
+        // A re-ring after a missed Wake Check (or the prompt itself) cannot be snoozed.
+        if (ring.kind === 'retrigger' || ring.kind === 'wake_check') {
+          throw new AlarmEngineError('SNOOZE_LIMIT', 'This alarm cannot be snoozed');
+        }
         if (policy && !canSnooze(policy, ring.snoozeCount)) {
           throw new AlarmEngineError('SNOOZE_LIMIT', 'No snoozes left for this alarm');
         }
@@ -217,15 +247,46 @@ export function createRingLifecycle(deps: RingLifecycleDeps) {
     dismiss(scheduleId: string, method: DismissMethod): Promise<DismissResult> {
       return serial(async () => {
         const ring = await requireRinging(scheduleId);
+        if (ring.kind === 'wake_check') {
+          throw new AlarmEngineError('INVALID_SPEC', 'Answer the Wake Check instead');
+        }
         if (ring.hasMissions && method !== 'mission') {
           throw new AlarmEngineError('INVALID_SPEC', 'Complete the mission to stop this alarm');
         }
-        // Wake Check scheduling (wakeCheckAt) is wired by the Wake Check integration.
-        const result = await engine.dismiss(scheduleId, { missionCompleted: method === 'mission' });
-        ledger.recordDismiss(ring, clock().toISOString(), method);
+        const now = clock();
+        // D13: the prompt and its re-trigger are native alarms scheduled at dismissal.
+        const armed = wakeChecks.planArm(ring, now);
+        const result = await engine.dismiss(scheduleId, {
+          missionCompleted: !ring.hasMissions || method === 'mission',
+          ...(armed ? { wakeCheckAt: armed.checkAt } : {}),
+        });
+        ledger.recordDismiss(ring, now.toISOString(), method);
+        if (armed) await wakeChecks.commitArm(ring, armed);
+        else wokeUp(ring, now);
         await ingest().catch(() => 0);
         notify();
         return result;
+      });
+    },
+
+    /** The Wake Check prompt was answered. `passed` ends the wake-up (no re-ring). */
+    passWakeCheck(ring: { alarmId: string; occurrenceKey: string }): Promise<PassResult> {
+      return serial(async () => {
+        const result = await wakeChecks.pass(ring);
+        if (result === 'passed') wokeUp(ring, clock());
+        await ingest().catch(() => 0);
+        notify();
+        return result;
+      });
+    },
+
+    /** The answer window ended unanswered: stop the prompt so the re-trigger rings. */
+    timeoutWakeCheck(ring: { alarmId: string; occurrenceKey: string }): Promise<boolean> {
+      return serial(async () => {
+        const timedOut = await wakeChecks.timeout(ring);
+        await ingest().catch(() => 0);
+        notify();
+        return timedOut;
       });
     },
 
