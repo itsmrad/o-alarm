@@ -1,19 +1,23 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Platform, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Platform, Text, View } from 'react-native';
 
 import { Button } from '@/components/button';
 import { ListRow } from '@/components/list-row';
 import { Screen } from '@/components/screen';
 import { Section, Separator } from '@/components/section';
+import { deviceTimeZone } from '@/db/alarm-service';
+import type { OccurrenceRow } from '@/db/repositories/occurrences';
+import { nextAlarmOccurrence, type AppEvent } from '@/domain';
 import {
   AlarmEngineError,
   type EngineReadiness,
   type ReadinessItem,
-  type ReconcileResult,
   type ScheduledAlarm,
 } from '@/engine';
-import type { AppEvent } from '@/domain';
-import { useAppServices } from '@/lib/app-services';
+import { formatClockString } from '@/features/alarms/format';
+import { useAlarms, useAppServices, useRingState } from '@/lib/app-services';
+
+import { likelyMissCauses, nextAlarmReadiness, type ReadinessLevel } from './readiness-summary';
 
 const STATUS_LABEL: Record<ReadinessItem['status'], string> = {
   ok: 'OK',
@@ -27,6 +31,23 @@ const STATUS_CLASS: Record<ReadinessItem['status'], string> = {
   warning: 'text-foreground',
   blocking: 'text-danger',
   unknown: 'text-foreground-muted',
+};
+
+const LEVEL_CLASS: Record<ReadinessLevel, string> = {
+  ready: 'text-success',
+  at_risk: 'text-foreground',
+  blocked: 'text-danger',
+  none: 'text-foreground-muted',
+};
+
+const OUTCOME_LABEL: Record<OccurrenceRow['status'], string> = {
+  scheduled: 'Scheduled',
+  triggered: 'Rang',
+  snoozed: 'Snoozed',
+  dismissed: 'Stopped',
+  missed: 'May not have rung',
+  skipped: 'Skipped',
+  cancelled: 'Cancelled',
 };
 
 /** D14 and other platform truths. Shown always; never claim what the OS cannot do. */
@@ -57,13 +78,26 @@ const describeError = (error: unknown) => {
   return `${e.code}: ${e.message}`;
 };
 
-/** Reliability diagnostics: engine readiness, what the OS holds vs the DB, recent events. */
+const clockOf = (iso: string) => {
+  const date = new Date(iso);
+  return formatClockString(date.getHours(), date.getMinutes());
+};
+
+const dayAndClock = (iso: string) =>
+  `${new Date(iso).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}, ${clockOf(iso)}`;
+
+/**
+ * Reliability diagnostics: will the next alarm ring, what the system holds vs the DB
+ * (last reconcile), alarms that may not have rung and why, and a real test alarm.
+ */
 export function DiagnosticsScreen() {
-  const { engine, alarms } = useAppServices();
+  const { engine, alarms, ring } = useAppServices();
+  const alarmList = useAlarms();
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
-  const [lastRun, setLastRun] = useState<ReconcileResult | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<'check' | 'test' | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const lastReconcile = useRingState((services) => services.ring.getLastReconcile());
+  const history = useRingState((services) => services.ledger.recentOccurrences(10));
 
   useEffect(() => {
     let active = true;
@@ -82,14 +116,32 @@ export function DiagnosticsScreen() {
     return () => {
       active = false;
     };
-  }, [engine, alarms, refreshKey]);
+  }, [engine, alarms, refreshKey, lastReconcile]);
 
-  const reconcileNow = async () => {
-    setBusy(true);
+  const recheck = async () => {
+    setBusy('check');
     try {
-      setLastRun(await alarms.reconcileAll());
+      await ring.sync('manual');
     } finally {
-      setBusy(false);
+      setBusy(null);
+      setRefreshKey((key) => key + 1);
+    }
+  };
+
+  const testInOneMinute = async () => {
+    setBusy('test');
+    try {
+      const entry = await alarms.scheduleTestAlarm(60_000);
+      Alert.alert(
+        'Test alarm set',
+        engine.kind === 'preview'
+          ? `It rings at ${clockOf(entry.fireAt)} — keep O-Alarm open: preview mode cannot ring in the background.`
+          : `It rings at ${clockOf(entry.fireAt)}. Lock your phone to check it rings like a real alarm.`,
+      );
+    } catch (error) {
+      Alert.alert('Could not set a test alarm', describeError(error));
+    } finally {
+      setBusy(null);
       setRefreshKey((key) => key + 1);
     }
   };
@@ -117,10 +169,74 @@ export function DiagnosticsScreen() {
       : []),
     ...PLATFORM_LIMITATIONS,
   ];
-  const failing = alarms.list().filter((a) => alarms.getStatus(a.id)?.state === 'failed');
+  const timeZone = deviceTimeZone();
+  const next = nextAlarmOccurrence(alarmList, new Date(), timeZone);
+  const summary = nextAlarmReadiness({
+    next,
+    status: next ? alarms.getStatus(next.alarmId) : undefined,
+    readiness: snapshot.readiness,
+    scheduled: snapshot.scheduled,
+  });
+  const labelOf = (alarmId: string | null) => {
+    const alarm = alarmId ? alarms.get(alarmId) : null;
+    return alarm ? alarm.label || formatClockString(alarm.hour, alarm.minute) : 'Deleted alarm';
+  };
+  const missed = history.filter((row) => row.status === 'missed');
+  const causes = likelyMissCauses(engine.kind, snapshot.readiness);
+  const failing = alarmList.filter((a) => alarms.getStatus(a.id)?.state === 'failed');
+  const result = lastReconcile?.result;
+  const repaired = result
+    ? result.plan.schedule.length + result.plan.reschedule.length + result.plan.cancel.length
+    : 0;
 
   return (
     <Screen>
+      <Section title="Next alarm">
+        <View className="gap-1 px-4 py-3" accessible accessibilityRole="summary">
+          <Text className={`text-headline ${LEVEL_CLASS[summary.level]}`}>{summary.headline}</Text>
+          {next ? (
+            <Text className="text-subhead text-foreground-muted">
+              {labelOf(next.alarmId)} · {dayAndClock(next.fireAt.toISOString())}
+            </Text>
+          ) : null}
+          {summary.reasons.map((reason) => (
+            <Text key={reason} className="text-footnote text-foreground-muted">
+              • {reason}
+            </Text>
+          ))}
+        </View>
+      </Section>
+
+      <Button
+        title={busy === 'test' ? 'Setting test alarm…' : 'Run test alarm in 1 minute'}
+        disabled={busy !== null}
+        onPress={testInOneMinute}
+      />
+
+      {missed.length > 0 ? (
+        <Section
+          title="May not have rung"
+          footer="O-Alarm expected these alarms but the system never reported them ringing."
+        >
+          {missed.map((row, index) => (
+            <View key={row.id}>
+              {index > 0 ? <Separator /> : null}
+              <ListRow title={dayAndClock(row.expectedAt)} detail={labelOf(row.alarmId)} />
+            </View>
+          ))}
+          <Separator />
+          <View className="gap-2 px-4 py-3">
+            <Text className="text-subhead font-semibold text-foreground">Likely causes</Text>
+            {causes.map((cause) => (
+              <View key={cause.title} className="gap-0.5">
+                <Text className="text-subhead text-foreground">{cause.title}</Text>
+                <Text className="text-footnote text-foreground-muted">{cause.detail}</Text>
+              </View>
+            ))}
+          </View>
+        </Section>
+      ) : null}
+
       <Section
         title="Readiness"
         footer={
@@ -146,8 +262,73 @@ export function DiagnosticsScreen() {
       </Section>
 
       <Section
+        title="This device ↔ system"
+        footer="O-Alarm compares its alarms with what the system holds on launch, on return, after each ring and when the time zone changes, and repairs any difference."
+      >
+        {result ? (
+          <>
+            <ListRow
+              title={result.verified ? 'In sync' : 'Mismatch found'}
+              detail={`Checked ${clockOf(lastReconcile.at)}${repaired ? ` · repaired: ${result.plan.schedule.length} missing, ${result.plan.reschedule.length} changed, ${result.plan.cancel.length} stale` : ''}`}
+              accessory={
+                <Text
+                  className={`text-footnote font-semibold ${result.verified ? 'text-success' : 'text-danger'}`}
+                >
+                  {result.verified ? 'OK' : 'Check'}
+                </Text>
+              }
+            />
+            {result.failures.map((failure) => (
+              <View key={`${failure.operation}-${failure.id}`}>
+                <Separator />
+                <ListRow
+                  title={`${labelOf(failure.alarmId)}: could not ${failure.operation}`}
+                  detail={`${failure.error.code}: ${failure.error.message}`}
+                />
+              </View>
+            ))}
+            {result.mismatches.map((id) => (
+              <View key={`mismatch-${id}`}>
+                <Separator />
+                <ListRow
+                  title={`${labelOf(id.split('@')[0] ?? null)}: system differs`}
+                  detail={`After repair, the system still reports ${id} differently.`}
+                />
+              </View>
+            ))}
+          </>
+        ) : (
+          <ListRow title="Not checked yet" />
+        )}
+      </Section>
+
+      {failing.length > 0 ? (
+        <Section title="Not scheduled">
+          {failing.map((alarm) => {
+            const status = alarms.getStatus(alarm.id);
+            return (
+              <ListRow
+                key={alarm.id}
+                title={labelOf(alarm.id)}
+                detail={
+                  status?.state === 'failed' ? `${status.code}: ${status.message}` : undefined
+                }
+              />
+            );
+          })}
+        </Section>
+      ) : null}
+
+      <Button
+        variant="secondary"
+        title={busy === 'check' ? 'Checking…' : 'Re-check now'}
+        disabled={busy !== null}
+        onPress={recheck}
+      />
+
+      <Section
         title={`Scheduled with the system (${engine.kind})`}
-        footer="Each alarm keeps its next rings scheduled ahead. O-Alarm re-checks on launch, on return and when the time zone changes."
+        footer="Each alarm keeps its next rings scheduled ahead."
       >
         {snapshot.scheduledError ? (
           <ListRow title="Could not read the system schedule" detail={snapshot.scheduledError} />
@@ -159,7 +340,7 @@ export function DiagnosticsScreen() {
               <View key={entry.id}>
                 {index > 0 ? <Separator /> : null}
                 <ListRow
-                  title={new Date(entry.fireAt).toLocaleString()}
+                  title={dayAndClock(entry.fireAt)}
                   detail={`${entry.label} · ${entry.kind}`}
                 />
               </View>
@@ -169,36 +350,22 @@ export function DiagnosticsScreen() {
         )}
       </Section>
 
-      {failing.length > 0 ? (
-        <Section title="Not scheduled">
-          {failing.map((alarm) => {
-            const status = alarms.getStatus(alarm.id);
-            return (
+      <Section title="Alarm history">
+        {history.length ? (
+          history.map((row, index) => (
+            <View key={row.id}>
+              {index > 0 ? <Separator /> : null}
               <ListRow
-                key={alarm.id}
-                title={alarm.label || `${alarm.hour}:${String(alarm.minute).padStart(2, '0')}`}
-                detail={
-                  status?.state === 'failed' ? `${status.code}: ${status.message}` : undefined
-                }
+                title={dayAndClock(row.expectedAt)}
+                detail={`${labelOf(row.alarmId)}${row.snoozeCount ? ` · snoozed ${row.snoozeCount}×` : ''}`}
+                value={OUTCOME_LABEL[row.status]}
               />
-            );
-          })}
-        </Section>
-      ) : null}
-
-      <Button
-        title={busy ? 'Checking…' : 'Re-check schedule'}
-        disabled={busy}
-        onPress={reconcileNow}
-      />
-      {lastRun ? (
-        <Text className="px-4 text-footnote text-foreground-muted">
-          {lastRun.verified ? 'Verified.' : 'Not verified.'} Scheduled{' '}
-          {lastRun.plan.schedule.length}, updated {lastRun.plan.reschedule.length}, removed{' '}
-          {lastRun.plan.cancel.length}, unchanged {lastRun.plan.unchanged.length}
-          {lastRun.failures.length ? `, ${lastRun.failures.length} failed` : ''}.
-        </Text>
-      ) : null}
+            </View>
+          ))
+        ) : (
+          <ListRow title="No alarms yet" />
+        )}
+      </Section>
 
       <Section title="Recent events">
         {snapshot.events.length ? (

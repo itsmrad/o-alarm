@@ -46,6 +46,7 @@ export const alarms = sqliteTable('alarms', {
   missions: json<MissionStep[]>('missions').notNull(),
   wakeCheck: json<WakeCheckConfig>('wake_check').notNull(),
   important: bool('important').notNull(),
+  missionBeforeSnooze: bool('mission_before_snooze').notNull().default(false),
 });
 
 export const alarmOccurrences = sqliteTable(

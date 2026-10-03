@@ -3,14 +3,19 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 import { AppState, Platform } from 'react-native';
 import * as Crypto from 'expo-crypto';
 
-import { createAlarmService, deviceTimeZone, type AlarmService } from '@/db/alarm-service';
+import { createAlarmService, type AlarmService } from '@/db/alarm-service';
 import { openAppDatabase } from '@/db/client';
 import { getOrCreateDeviceId } from '@/db/repositories/device';
 import { resolveEngine, type AlarmEngine } from '@/engine';
+import { createReliabilityLedger, type ReliabilityLedger } from '@/services/reliability-ledger';
+import { createRingLifecycle, type RingLifecycle } from '@/services/ring-lifecycle';
 
 export interface AppServices {
   engine: AlarmEngine;
   alarms: AlarmService;
+  ledger: ReliabilityLedger;
+  /** Ring/reconcile lifecycle; also the snooze/dismiss/mission hook point. */
+  ring: RingLifecycle;
 }
 
 type BootState =
@@ -25,12 +30,26 @@ async function boot(): Promise<AppServices> {
   const deviceId = getOrCreateDeviceId(db, Crypto.randomUUID, Platform.OS, new Date());
   const engine = resolveEngine();
   const alarms = createAlarmService({ db, engine, deviceId });
-  return { engine, alarms };
+  const ledger = createReliabilityLedger({
+    db,
+    deviceId,
+    engineKind: engine.kind,
+    getAlarm: alarms.get,
+  });
+  const ring = createRingLifecycle({
+    engine,
+    alarms,
+    ledger,
+    showRinging: (event) =>
+      router.push({ pathname: '/ringing', params: { scheduleId: event.scheduleId } }),
+  });
+  return { engine, alarms, ledger, ring };
 }
 
 /**
- * Opens the local DB, resolves the alarm engine (D6) and reconciles DB ↔ engine on
- * start, on every foreground, and when the device time zone changes (D10).
+ * Opens the local DB, resolves the alarm engine (D6) and starts the ring lifecycle:
+ * ringing routing, observed-event ingestion and DB ↔ engine reconciliation on start,
+ * on every foreground, and when the device time zone changes (D10).
  */
 export function AppServicesProvider({
   children,
@@ -61,30 +80,15 @@ export function AppServicesProvider({
 
   useEffect(() => {
     if (!services) return;
-    let lastZone = deviceTimeZone();
-    const run = () => {
-      lastZone = deviceTimeZone();
-      // Failures are recorded per alarm (status + alarm_schedule_failed events).
-      services.alarms.reconcileAll().catch(() => undefined);
-    };
-    run();
-    const appState = AppState.addEventListener('change', (next) => {
-      if (next === 'active') run();
-    });
+    const { ring } = services;
+    ring.start();
+    const appState = AppState.addEventListener('change', ring.onAppStateChange);
     // Time zone changes while foregrounded (no JS event exists for this).
-    const tzPoll = setInterval(() => {
-      if (deviceTimeZone() !== lastZone) run();
-    }, 60_000);
-    const trigger = services.engine.addListener('trigger', (event) => {
-      router.push({
-        pathname: '/ringing',
-        params: { alarmId: event.alarmId, occurrenceKey: event.occurrenceKey },
-      });
-    });
+    const tzPoll = setInterval(ring.checkTimeZone, 60_000);
     return () => {
       appState.remove();
       clearInterval(tzPoll);
-      trigger.remove();
+      ring.stop();
     };
   }, [services]);
 
@@ -116,4 +120,23 @@ export function useNow(intervalMs = 30_000): Date {
     return () => clearInterval(id);
   }, [intervalMs]);
   return now;
+}
+
+/** Re-renders when the ring lifecycle reports new ledger/sync state. */
+export function useRingState<T>(read: (services: AppServices) => T): T {
+  const services = useAppServices();
+  const [value, setValue] = useState(() => read(services));
+  useEffect(() => {
+    const update = () => setValue(read(services));
+    update();
+    const offRing = services.ring.subscribe(update);
+    const offAlarms = services.alarms.subscribe(update);
+    return () => {
+      offRing();
+      offAlarms();
+    };
+    // `read` is intentionally captured once per services instance.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [services]);
+  return value;
 }

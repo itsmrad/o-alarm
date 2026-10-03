@@ -1,0 +1,1 @@
+ALTER TABLE `alarms` ADD `mission_before_snooze` integer DEFAULT false NOT NULL;
