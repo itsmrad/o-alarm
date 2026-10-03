@@ -131,8 +131,27 @@ export function createLocalSyncStore(db: AppDatabase) {
             .run();
         }
       },
-      count(): number {
-        return db.select({ n: count() }).from(outbox).get()?.n ?? 0;
+      /** Entries of `entities` created at or before `at` (covered by a history push). */
+      removeEntities(entities: readonly string[], at: string): void {
+        if (entities.length === 0) return;
+        const ids = db
+          .select({ id: outbox.id, createdAt: outbox.createdAt })
+          .from(outbox)
+          .where(inArray(outbox.entity, [...entities]))
+          .all()
+          .filter((row) => row.createdAt <= at)
+          .map((row) => row.id);
+        this.remove(ids);
+      },
+      /** Pending entries of the entities sync uploads. */
+      count(entities: readonly string[]): number {
+        return (
+          db
+            .select({ n: count() })
+            .from(outbox)
+            .where(inArray(outbox.entity, [...entities]))
+            .get()?.n ?? 0
+        );
       },
     },
   };

@@ -222,6 +222,18 @@ describe('sync engine: push', () => {
     expect(t.transport.calls.filter((c) => c.startsWith('upsert:events'))).toEqual([]);
     t.close();
   });
+  it('clears outbox entries other features queued for pushed history tables', async () => {
+    const t = setup();
+    const outbox = createOutboxRepository(t.db, t.newId);
+    const now = new Date('2026-10-02T05:00:00Z');
+    outbox.enqueue({ entity: 'sleep_sessions', entityId: 's1', op: 'upsert', payload: {} }, now);
+    outbox.enqueue({ entity: 'preferences', entityId: 'p1', op: 'upsert', payload: {} }, now);
+    expect(t.sync.getStatus().pendingCount).toBe(1);
+    await t.sync.run();
+    expect(t.outbox().map((entry) => entry.entity)).toEqual(['preferences']);
+    expect(t.sync.getStatus().pendingCount).toBe(0);
+    t.close();
+  });
 });
 
 describe('sync engine: offline + backoff', () => {

@@ -82,8 +82,9 @@ export function SyncProvider({ children }: { children: ReactNode }) {
         alarmEngine: services.engine.kind,
       },
       getTier: () => getEntitlementSnapshot().tier,
-      // Pulled alarms reach the OS only through the normal reconcile path (D17).
-      reconcile: () => services.alarms.reconcileAll(),
+      // Pulled alarms reach the OS only through the normal reconcile path (D17), which is
+      // serialized with the ring lifecycle and never reconciles under a ringing alarm.
+      reconcile: () => services.ring.sync('manual'),
     });
   }, [config, userId, getToken, services]);
 

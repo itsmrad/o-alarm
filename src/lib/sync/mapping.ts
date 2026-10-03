@@ -134,8 +134,6 @@ const occurrenceKeyFor = (alarmId: string, date: string) => `${alarmId}@${date}`
 
 /** The cloud alarm row for a local alarm row (incl. tombstones). */
 export function alarmToCloud(row: AlarmRow, alarm: Alarm, ctx: MapContext): CloudAlarm {
-  // D32: missionBeforeSnooze joins the local model with the ringing task; map it when present.
-  const extra = alarm as Alarm & { missionBeforeSnooze?: boolean };
   const override = alarm.oneOffOverride;
   const overrideDate = override ? occurrenceDate(override.occurrenceKey) : null;
   return {
@@ -160,7 +158,7 @@ export function alarmToCloud(row: AlarmRow, alarm: Alarm, ctx: MapContext): Clou
     snooze_minutes: alarm.snooze.durationMin,
     snooze_limit: alarm.snooze.maxCount,
     mission_chain: alarm.missions,
-    mission_before_snooze: extra.missionBeforeSnooze ?? false,
+    mission_before_snooze: alarm.missionBeforeSnooze,
     wake_check_enabled: alarm.wakeCheck.enabled,
     wake_check_delay_minutes: alarm.wakeCheck.delayMin,
     wake_check_method: alarm.wakeCheck.method,
@@ -213,7 +211,6 @@ export function alarmFromCloud(row: CloudAlarm): Alarm | null {
       maxRetriggers: row.wake_check_max_retriggers,
     },
     important: row.important,
-    // Kept by alarmSchema once the local model has it (D32), stripped until then.
     missionBeforeSnooze: row.mission_before_snooze,
   };
   const parsed = alarmSchema.safeParse(candidate);

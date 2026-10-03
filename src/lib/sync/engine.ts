@@ -120,6 +120,18 @@ const PULL_OVERLAP_MS = 5_000;
 const ZERO_UUID = '00000000-0000-0000-0000-000000000000';
 const EPOCH: PullCursor = { updatedAt: '1970-01-01T00:00:00.000Z', id: ZERO_UUID };
 const PARKED_MAX_MS = 24 * 60 * 60_000;
+/** Local tables pushed by history scan (outbox entries for them are redundant). */
+const HISTORY_ENTITIES = [
+  'alarm_occurrences',
+  'wake_sessions',
+  'mission_attempts',
+  'wake_checks',
+  'sleep_sessions',
+  'morning_checkins',
+  'events',
+] as const;
+/** Outbox entities that cloud sync uploads (others, e.g. preferences, are not synced yet). */
+const SYNCED_ENTITIES = ['alarms', ...HISTORY_ENTITIES];
 
 /** Delay before retry `attempt` (1-based): 30 s doubling to 30 min, with 50–100 % jitter. */
 export function backoffDelay(attempt: number, random: () => number = Math.random): number {
@@ -381,11 +393,14 @@ export function createSyncEngine(deps: SyncEngineDeps) {
     }
   }
 
+  /** Pushes every history table; outbox entries other features queued for them are covered. */
   async function pushHistory(): Promise<number> {
+    const startedAt = clock().toISOString();
     let pushed = 0;
     for (const table of historyTables) {
       pushed += (await pushScan(table.cloud, table.local, table.map)).size;
     }
+    store.outbox.removeEntities(HISTORY_ENTITIES, startedAt);
     return pushed;
   }
 
@@ -569,7 +584,7 @@ export function createSyncEngine(deps: SyncEngineDeps) {
         ...status,
         lastSyncedAt: account.lastSyncedAt,
         migratedAt: account.migratedAt,
-        pendingCount: store.outbox.count(),
+        pendingCount: store.outbox.count(SYNCED_ENTITIES),
       };
     },
     subscribe(listener: () => void): () => void {

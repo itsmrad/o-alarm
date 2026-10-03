@@ -65,6 +65,7 @@ const everyField = createAlarm({
     maxRetriggers: 10,
   },
   important: true,
+  missionBeforeSnooze: true,
 });
 
 describe('alarm mapping (D25)', () => {
@@ -108,7 +109,7 @@ describe('alarm mapping (D25)', () => {
       snooze_minutes: 15,
       snooze_limit: 10,
       mission_chain: everyField.missions,
-      mission_before_snooze: false,
+      mission_before_snooze: true,
       wake_check_enabled: true,
       wake_check_delay_minutes: 45,
       wake_check_method: 'mission',
@@ -119,9 +120,9 @@ describe('alarm mapping (D25)', () => {
     });
   });
 
-  it('maps D32 missionBeforeSnooze when the local model carries it', () => {
-    const alarm = { ...everyField, missionBeforeSnooze: true } as Alarm;
-    expect(alarmToCloud(rowFor(alarm), alarm, ctx).mission_before_snooze).toBe(true);
+  it('maps D32 missionBeforeSnooze', () => {
+    const alarm = { ...everyField, missionBeforeSnooze: false };
+    expect(alarmToCloud(rowFor(alarm), alarm, ctx).mission_before_snooze).toBe(false);
   });
 
   it('converts weekdays 0=Sun local ↔ ISO 1..7 cloud', () => {
