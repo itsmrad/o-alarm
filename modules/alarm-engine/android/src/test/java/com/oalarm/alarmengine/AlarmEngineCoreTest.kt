@@ -199,6 +199,41 @@ class AlarmEngineCoreTest {
     assertEquals(0, h.ringer.stops)
   }
 
+  // ---- D37: wake-check prompt vs retrigger ----
+
+  private fun ringPromptWithPendingRetrigger() {
+    core.schedule(spec(id = "a1@2026-10-05#wake-check-1", kind = ScheduleKinds.WAKE_CHECK, fireAt = "2026-10-05T11:10:00.000Z", wallClock = null))
+    core.schedule(
+      spec(
+        id = "a1@2026-10-05#retrigger-1", kind = ScheduleKinds.RETRIGGER, fireAt = "2026-10-05T11:12:00.000Z",
+        wallClock = null, snooze = SnoozeConfig(false, 9, 0),
+      ),
+    )
+    h.now = Instant.parse("2026-10-05T11:10:00Z")
+    core.onFire("a1@2026-10-05#wake-check-1")
+  }
+
+  @Test fun retriggerPreemptsARingingWakeCheckPrompt() {
+    ringPromptWithPendingRetrigger()
+    h.now = Instant.parse("2026-10-05T11:12:00Z")
+    core.onFire("a1@2026-10-05#retrigger-1")
+    val ringing = core.getRinging()!!
+    assertEquals("a1@2026-10-05#retrigger-1", ringing.scheduleId)
+    assertEquals(ScheduleKinds.RETRIGGER, ringing.spec.kind)
+    assertEquals(2, h.ringer.rings)
+    expectCode(EngineException.SNOOZE_LIMIT) { core.snooze(ringing.scheduleId) } // snooze.enabled = false
+    // The prompt is gone, not queued behind the retrigger.
+    core.dismiss(ringing.scheduleId, missionCompleted = true, wakeCheckAt = null)
+    assertNull(core.getRinging())
+  }
+
+  @Test fun stoppingAPromptWithoutPassingKeepsTheRetrigger() {
+    ringPromptWithPendingRetrigger()
+    core.dismiss("a1@2026-10-05#wake-check-1", missionCompleted = false, wakeCheckAt = null)
+    assertTrue(core.getScheduled().any { it.spec.id == "a1@2026-10-05#retrigger-1" })
+    assertTrue(h.os.armed.containsKey("a1@2026-10-05#retrigger-1"))
+  }
+
   // ---- restore: boot / tz / time (D10) ----
 
   @Test fun bootRestoreReArmsTheMirrorWithoutJs() {

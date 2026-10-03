@@ -205,13 +205,17 @@ ios/
 - **Intents** run in the app process (AlarmKit launches it in the background if needed), so
   they work with JS dead. Events still go to the log, and to JS when it is alive.
   - *Stop* (system button): logs `stopped_from_system_ui`. If the alarm `hasMissions` or
-    `wakeCheck`, it arms `<occurrenceKey>#retrigger-<n>` at now + 1 min, logs `retriggered`,
+    `wakeCheck`, it arms `<occurrenceKey>#retrigger-sys-<n>` at now + 1 min, logs `retriggered`,
     keeps the ringing record (the mission is still owed) and emits `onStop
     {missionCompleted: false}`. Otherwise the ring is over (`missionCompleted: true`).
   - *Open*: stops the system alert and keeps or creates the ringing record, so JS routes to
-    `/ringing`. It arms a safety retrigger at now + 3 min that `dismiss`/`snooze` cancel.
+    `/ringing`. It arms a safety retrigger at now + 3 min that `snooze` or `dismiss` with `missionCompleted: true` cancel.
   - *Snooze*: arms `<occurrenceKey>#snooze-<n>` at now + `durationMin` and stops the alert.
     If the limit was already hit, it re-rings in 1 min instead of going silent.
+  - D37: a retrigger that starts alerting stops its wake-check prompt and becomes the ring.
+    Stop on a prompt never cancels the pending JS retrigger; only `dismiss` with
+    `missionCompleted: true` (the in-app pass) cancels retriggers. Native safety retriggers
+    use the `-sys` suffix so they never overwrite JS's `#retrigger-<attempt>`.
   - Retriggers are bounded at **5 per occurrence**. When the engine stops an alarm itself
     (in-app dismiss/snooze, Open), it marks the id for 10 min, so a Stop intent the system
     runs for that stop isn't treated as the user's Stop button.

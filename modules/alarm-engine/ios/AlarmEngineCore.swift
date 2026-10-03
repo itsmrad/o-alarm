@@ -372,7 +372,8 @@ actor AlarmEngineCore {
         wakeCheck = try await upsert(wakeSpec)
         state.wakeCheckAttempts[key] = attempt
       }
-      cancelRetriggers(key)
+      // D37: only a completed mission / in-app pass cancels pending retriggers.
+      if missionCompleted { cancelRetriggers(key) }
       await finishRing(ring, reason: "dismissed")
       state.snoozeCounts.removeValue(forKey: key)
       state.retriggerCounts.removeValue(forKey: key)
@@ -512,6 +513,7 @@ actor AlarmEngineCore {
       for uuid in alerting where !alertingSeen.contains(uuid) && !wasHandled(uuid.uuidString) {
         alertingSeen.insert(uuid)
         guard let spec = lookupSpec(alarmUUID: uuid) else { continue }
+        if spec.kind == "retrigger" { await stopPrompts(supersededBy: spec, alerting: alerting) }
         if ensureRinging(spec, alarmUUID: uuid.uuidString) {
           triggered.append(payload(spec, scheduleId: spec.id))
         }
@@ -723,6 +725,20 @@ actor AlarmEngineCore {
     }
   }
 
+  /// D37: a retrigger firing while its wake-check prompt alerts stops the prompt and rings.
+  /// The prompt is marked handled first, so our own stop never runs the Stop intent logic.
+  private func stopPrompts(supersededBy retrigger: AlarmSpec, alerting: Set<UUID>) async {
+    for uuid in alerting where !wasHandled(uuid.uuidString) {
+      guard let prompt = lookupSpec(alarmUUID: uuid), prompt.kind == "wake_check",
+            prompt.occurrenceKey == retrigger.occurrenceKey
+      else { continue }
+      markHandled(uuid.uuidString, reason: "superseded_by_retrigger")
+      try? AlarmManager.shared.stop(id: uuid)
+      alertingSeen.remove(uuid)
+      await retireFired(prompt, alarmUUID: uuid.uuidString)
+    }
+  }
+
   private func cancelRetriggers(_ occurrenceKey: String) {
     let pending = state.entries.values.filter {
       $0.spec.kind == "retrigger" && $0.spec.occurrenceKey == occurrenceKey
@@ -750,13 +766,15 @@ actor AlarmEngineCore {
     }
   }
 
-  /// Arms `<occurrenceKey>#retrigger-<n>` if the bound allows. Failures are logged.
+  /// Arms `<occurrenceKey>#retrigger-sys-<n>` if the bound allows. Failures are logged. The
+  /// `-sys` suffix keeps native safety retriggers apart from JS Wake Check retriggers
+  /// (`#retrigger-<attempt>`), so neither overwrites the other.
   private func armRetrigger(_ spec: AlarmSpec, delay: TimeInterval, reason: String) async -> MirrorEntry? {
     let key = spec.occurrenceKey
     let number = (state.retriggerCounts[key] ?? 0) + 1
     guard number <= Self.maxRetriggers else { return nil }
     let fireAt = EngineTime.iso(Date().addingTimeInterval(delay))
-    let retriggerSpec = spec.followUp(id: "\(key)#retrigger-\(number)", kind: "retrigger", fireAt: fireAt)
+    let retriggerSpec = spec.followUp(id: "\(key)#retrigger-sys-\(number)", kind: "retrigger", fireAt: fireAt)
     do {
       let entry = try await upsert(retriggerSpec)
       state.retriggerCounts[key] = number

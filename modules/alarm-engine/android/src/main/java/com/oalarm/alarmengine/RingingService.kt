@@ -99,7 +99,9 @@ class RingingService : Service() {
       .apply { acquire(WAKE_LOCK_TIMEOUT_MS) }
     requestFocus()
     if (!startPlayer(soundUri(spec.sound)) && !startPlayer(defaultAlarmUri())) startTone()
-    if (spec.escalation.enabled && spec.escalation.rampSeconds > 0) escalate(spec.escalation.rampSeconds) else setVolume(1f)
+    // D37: retriggers ring at full volume at once.
+    val ramp = spec.kind != ScheduleKinds.RETRIGGER && spec.escalation.enabled && spec.escalation.rampSeconds > 0
+    if (ramp) escalate(spec.escalation.rampSeconds) else setVolume(1f)
     if (spec.vibration) startVibration()
   }
 
@@ -293,7 +295,8 @@ class RingingService : Service() {
         builder.setContentIntent(open).setFullScreenIntent(open, true)
       }
       // System-UI actions only where they can't bypass a mission or Wake Check (D13/D14).
-      if (!spec.hasMissions && spec.snooze.enabled && ringing.snoozeCount < spec.snooze.maxCount) {
+      val snoozable = spec.kind != ScheduleKinds.WAKE_CHECK && spec.snooze.enabled && ringing.snoozeCount < spec.snooze.maxCount
+      if (!spec.hasMissions && snoozable) {
         builder.addAction(action(context, "Snooze", RingingActionReceiver.ACTION_SNOOZE, spec.id))
       }
       if (!spec.hasMissions && !spec.wakeCheck) {

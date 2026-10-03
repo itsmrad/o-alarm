@@ -125,7 +125,10 @@ class AlarmEngineCore(
   private fun startRinging(spec: AlarmSpec, now: Instant) {
     val record = RingingRecord(spec, isoString(now), store.snoozeCounts[spec.occurrenceKey] ?: 0)
     record(ObservedTypes.TRIGGER_RECEIVED, spec, null)
-    if (store.ringing == null) {
+    val current = store.ringing
+    // D37: a retrigger firing while a wake-check prompt rings stops the prompt and rings.
+    val preempts = current != null && spec.kind == ScheduleKinds.RETRIGGER && current.spec.kind == ScheduleKinds.WAKE_CHECK
+    if (current == null || preempts) {
       store.ringing = record
       persist()
       ringer.ring()
