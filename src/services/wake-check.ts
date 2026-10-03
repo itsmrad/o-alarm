@@ -123,6 +123,7 @@ export function createWakeCheckService(deps: WakeCheckDeps) {
 
   /** Stops the prompt alarm if it is the one ringing (it is not a dismissal of the alarm). */
   async function stopPrompt(occurrenceKey: string, missionCompleted: boolean) {
+    // Fail-safe: if the engine can't be read, the prompt keeps ringing (never silenced).
     const ringing = await deps.engine.getActiveRinging().catch(() => null);
     if (ringing?.kind === 'wake_check' && ringing.occurrenceKey === occurrenceKey) {
       await deps.engine.dismiss(ringing.scheduleId, { missionCompleted });

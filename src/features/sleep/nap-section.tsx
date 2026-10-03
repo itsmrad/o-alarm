@@ -62,8 +62,19 @@ export function NapSection({ alarms, now }: { alarms: readonly Alarm[]; now: Dat
               <Button
                 title="Cancel"
                 variant="secondary"
-                onPress={() => {
-                  service.remove(alarm.id).catch(() => undefined);
+                onPress={async () => {
+                  // Never silent (D11): if the OS still holds it, the nap would still ring.
+                  try {
+                    const status = await service.remove(alarm.id);
+                    if (status.state === 'failed') {
+                      Alert.alert('Cancelled, but the system still has it', status.message);
+                    }
+                  } catch (error) {
+                    Alert.alert(
+                      'Could not cancel nap',
+                      error instanceof Error ? error.message : String(error),
+                    );
+                  }
                 }}
               />
             }

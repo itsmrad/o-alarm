@@ -83,6 +83,17 @@ object Readiness {
       )
     }
 
+    // A custom sound that isn't bundled still rings, with the default alarm sound.
+    val specs = Engine.get(context).let { engine -> engine.getScheduled().map { it.spec } + listOfNotNull(engine.getRinging()?.spec) }
+    val missingSounds = CustomSounds.missing(context, specs)
+    if (missingSounds.isNotEmpty()) {
+      items += item(
+        "engine", "warning", "Custom sound unavailable",
+        "These sounds aren't installed, so the default alarm sound plays instead: ${missingSounds.joinToString(", ")}.",
+        null,
+      )
+    }
+
     oemHint()?.let { (brand, detail) ->
       items += item("platform_limitation", "warning", "$brand may stop alarms", detail, mapOf("type" to "open_settings"))
     }

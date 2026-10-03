@@ -8,6 +8,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { Alarm, WakeCheckState } from '@/domain';
 import type { RingingState } from '@/engine';
+import { RINGING_READ_RETRY_MS } from '@/features/ringing/ringing-screen';
 import { useMissionEntitlement } from '@/features/missions/entitlement';
 import { MissionChainRunner } from '@/features/missions/mission-chain-runner';
 import { useAppServices, useNow } from '@/lib/app-services';
@@ -47,11 +48,11 @@ export function WakeCheckScreen() {
   const [busy, setBusy] = useState(false);
   const timedOut = useRef(false);
 
+  const [readFailures, setReadFailures] = useState(0);
+
   const refresh = useCallback(() => {
-    engine
-      .getActiveRinging()
-      .catch(() => null)
-      .then((ringing) => {
+    engine.getActiveRinging().then(
+      (ringing) => {
         if (ringing && ringing.kind !== 'wake_check') {
           // The re-trigger (or another alarm) took over: that is a full ring.
           router.replace('/ringing');
@@ -69,8 +70,17 @@ export function WakeCheckScreen() {
               }
             : { status: 'ended' },
         );
-      });
+      },
+      // A failed read is not "the prompt ended": keep the screen up and read again.
+      () => setReadFailures((n) => n + 1),
+    );
   }, [engine, alarms, wakeChecks]);
+
+  useEffect(() => {
+    if (readFailures === 0) return;
+    const id = setTimeout(refresh, RINGING_READ_RETRY_MS);
+    return () => clearTimeout(id);
+  }, [readFailures, refresh]);
 
   useEffect(() => {
     ring.setRingingScreenOpen(true);
@@ -100,6 +110,7 @@ export function WakeCheckScreen() {
   useEffect(() => {
     if (!prompt || secondsLeft !== 0 || timedOut.current) return;
     timedOut.current = true;
+    // Best effort: the re-trigger is already a native alarm (D13) and rings even if this fails.
     ring.timeoutWakeCheck(prompt.ringing).catch(() => undefined);
   }, [prompt, secondsLeft, ring]);
 

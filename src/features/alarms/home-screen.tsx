@@ -1,7 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { Stack, router, useIsFocused } from 'expo-router';
 import { useEffect } from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { Alert, Pressable, Text, View } from 'react-native';
 
 import { Button } from '@/components/button';
 import { ClockText } from '@/components/clock-text';
@@ -128,7 +128,22 @@ function AlarmRow({ alarm, now, timeZone }: { alarm: Alarm; now: Date; timeZone:
               const proceed = await confirmWeakening(weakening, (occurrence) =>
                 describeOccurrence(occurrence, new Date()),
               );
-              if (proceed) service.setEnabled(alarm.id, enabled).catch(() => undefined);
+              if (!proceed) return;
+              // Never silent (D11): a failed schedule or write is surfaced right here.
+              try {
+                const result = await service.setEnabled(alarm.id, enabled);
+                if (result.status.state === 'failed') {
+                  Alert.alert(
+                    'Saved, but not scheduled',
+                    `The system did not accept this alarm: ${result.status.message}\n\nSee Settings → Reliability for details.`,
+                  );
+                }
+              } catch (error) {
+                Alert.alert(
+                  'Could not update alarm',
+                  error instanceof Error ? error.message : String(error),
+                );
+              }
             }}
           />
         </View>

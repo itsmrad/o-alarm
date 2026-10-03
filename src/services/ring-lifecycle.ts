@@ -17,6 +17,9 @@ import type { MissionGateParams } from '@/features/ringing/mission-gate';
 import type { ReliabilityLedger } from './reliability-ledger';
 import type { PassResult, WakeCheckService } from './wake-check';
 
+/** How long a requested-but-not-yet-mounted alarm screen suppresses repeat navigation. */
+const SHOW_PENDING_MS = 10_000;
+
 export type SyncReason = 'start' | 'foreground' | 'timezone' | 'ring_ended' | 'manual';
 
 export interface SyncReport {
@@ -73,7 +76,10 @@ export function createRingLifecycle(deps: RingLifecycleDeps) {
   let subscriptions: EngineSubscription[] = [];
   let queue: Promise<unknown> = Promise.resolve();
   let lastZone = timeZone();
-  let ringingScreenOpen = false;
+  /** Mounted alarm screens (ringing / Wake Check); a replace can overlap mount + unmount. */
+  let alarmScreensOpen = 0;
+  /** Navigation already requested for this ring, before its screen has mounted. */
+  let pendingShow: { scheduleId: string; at: number } | null = null;
   let checkInQueued = false;
   let lastSync: SyncReport | null = null;
   let lastReconcile: { at: string; result: ReconcileResult } | null = null;
@@ -87,10 +93,21 @@ export function createRingLifecycle(deps: RingLifecycleDeps) {
     return run;
   }
 
+  /**
+   * Idempotent per ring: the Android full-screen intent (`oalarm://ringing`), the JS
+   * `trigger` listener and every sync may all ask for the same ring. Only the first opens
+   * a screen; the rest are no-ops until that screen has mounted (it then owns the ring)
+   * or the request went stale (navigation never happened, so a later sync retries).
+   */
   function show(ring: AlarmEngineEventPayload): void {
-    if (ringingScreenOpen) return;
+    if (alarmScreensOpen > 0) return;
+    const now = clock().getTime();
+    if (pendingShow?.scheduleId === ring.scheduleId && now - pendingShow.at < SHOW_PENDING_MS) {
+      return;
+    }
     if (ring.kind === 'wake_check') deps.showWakeCheck(ring);
     else deps.showRinging(ring);
+    pendingShow = { scheduleId: ring.scheduleId, at: now };
   }
 
   function wokeUp(ring: { alarmId: string; occurrenceKey: string }, at: Date) {
@@ -126,7 +143,11 @@ export function createRingLifecycle(deps: RingLifecycleDeps) {
       if (subscriptions.length) return;
       subscriptions = [
         engine.addListener('trigger', (event) => {
-          show(event);
+          try {
+            show(event);
+          } catch {
+            // Router not ready (cold start): the start sync routes via getActiveRinging.
+          }
           serial(async () => {
             ledger.recordTrigger(event, event.at);
             if (event.kind === 'wake_check') wakeChecks.onCheckDue(event, event.at);
@@ -135,6 +156,8 @@ export function createRingLifecycle(deps: RingLifecycleDeps) {
             }
             await ingest();
           })
+            // Bookkeeping only: the native log keeps `trigger_received` until acked, so the
+            // next sync replays it. Routing above already happened.
             .catch(() => undefined)
             .finally(notify);
         }),
@@ -142,6 +165,7 @@ export function createRingLifecycle(deps: RingLifecycleDeps) {
         // reconcile that was held back while it rang.
         ...(['snooze', 'dismiss', 'stop'] as const).map((type) =>
           engine.addListener(type, () => {
+            // sync() records step failures in its report (Diagnostics); it does not reject.
             lifecycle.sync('ring_ended').catch(() => undefined);
           }),
         ),
@@ -297,9 +321,11 @@ export function createRingLifecycle(deps: RingLifecycleDeps) {
       else await lifecycle.dismiss(params.scheduleId, 'mission');
     },
 
-    /** The ringing screen registers itself so triggers don't stack a second copy. */
+    /** The ringing / Wake Check screens register themselves so triggers don't stack a second copy. */
     setRingingScreenOpen(open: boolean): void {
-      ringingScreenOpen = open;
+      alarmScreensOpen = Math.max(0, alarmScreensOpen + (open ? 1 : -1));
+      // Mounted: the screen owns the ring. Closed: a ring still active must route again.
+      pendingShow = null;
     },
 
     /** After the final wake-up: offer the morning check-in once the alarm UI is gone. */

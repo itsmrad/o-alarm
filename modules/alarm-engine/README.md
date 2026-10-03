@@ -57,7 +57,9 @@ android/src/main/java/com/oalarm/alarmengine/
   AlarmEnginePackage.kt     shows the RN activity over the lock screen only while ringing
   Readiness.kt              diagnostics + settings intents
   Engine.kt                 process-wide singleton over device-protected storage
-android/src/test/…          JVM tests (store, recurrence, core)
+  CustomSounds.kt           custom sound id → res/raw / file / URI (+ readiness check)
+  DirectBoot.kt             defers RN/Expo app init until the first unlock
+android/src/test/…          JVM tests (store, recurrence, core, sounds, direct boot)
 ```
 
 **Mirror (D10).** Every scheduled spec is stored verbatim (all fields, incl. `wallClock`) in
@@ -98,7 +100,10 @@ it is never silent. Escalation ramps player volume 15 % → 100 % of the alarm s
 `rampSeconds`; vibration uses the alarm vibration usage. It holds a partial wake lock and
 requests transient audio focus. Its notification (category ALARM) carries a full-screen
 intent: `ACTION_VIEW oalarm://ringing?alarmId=…&occurrenceKey=…&scheduleId=…` to the launch
-activity, which Expo Router maps to `app/ringing.tsx` (cold and warm start). The activity is
+activity, which Expo Router maps to `app/ringing.tsx` (cold and warm start). The JS `trigger`
+listener and every sync may ask for the same ring: routing is idempotent per schedule id
+(`ring-lifecycle.ts` `show`) and `/ringing` / `/wake-check` are singular routes, so one ring
+never stacks two ringing screens. The activity is
 shown over the lock screen and turns the screen on **only while ringing**. If the user swipes
 the notification away (Android 14+), it is reposted. The service is `START_STICKY` and reads
 the ring from the mirror, so it keeps ringing when JS dies or the process is restarted, and it
@@ -137,10 +142,18 @@ intent and battery optimization (it resolves the current status; JS re-checks on
 | Recurring alarms keep ringing without the app (2 ahead + native re-arm) | Skip-next / overrides need JS to have run once after the edit |
 | Missed alarms are reported (`missed`), never silently dropped | A device powered off at fire time cannot ring |
 
-Before the first unlock after a reboot the RN activity can't start (credential storage is
-locked): the alarm still rings with its notification; mission alarms need an unlock to open
-the ringing screen. Device test row 5 must confirm the app's `Application.onCreate` (Expo
-modules) tolerates direct boot.
+**Direct boot.** Before the first unlock after a reboot, `LOCKED_BOOT_COMPLETED` starts the
+app process. Only direct-boot-aware components run: the receivers, `RingingService` and the
+engine, all on device-protected storage. React Native (SoLoader) and Expo modules (e.g. the
+dev launcher's SharedPreferences) touch credential-encrypted storage, which throws while
+locked, so the config plugin inserts `DirectBoot.deferUntilUnlocked` at the top of the
+generated `MainApplication.onCreate` (after `super.onCreate()`). While locked it skips RN /
+Expo init and runs it once on `ACTION_USER_UNLOCKED`; the restore runs without it.
+`DirectBootTest` covers the gate (locked → deferred, init once on unlock, unlock racing the
+registration), `AlarmEngineCoreTest.bootRestoreReArmsTheMirrorWithoutJs` the restore, and the
+plugin test fails prebuild if the guard can't be inserted. The RN activity can't start
+before the unlock: the alarm still rings with its notification; mission alarms need an
+unlock to open the ringing screen.
 
 ### Build & test (Linux, D7)
 
@@ -151,8 +164,11 @@ cd android && oalarm-heavy ./gradlew :app:assembleDebug
 oalarm-heavy ./gradlew :alarm-engine:testDebugUnitTest   # JVM tests, no device
 ```
 
-Custom sounds: put the file in the app's `res/raw` (e.g. via a config plugin) and pass its
-resource name as `sound.id`; anything unresolvable falls back to the default alarm sound.
+Custom sounds: the config plugin copies every `assets/sounds/<id>.(wav|caf|aiff|m4a|mp3)` to
+`res/raw/<name>` (lowercase, `[^a-z0-9_]` → `_`, `s_` prefix if it doesn't start with a
+letter — `CustomSounds.resourceName`, kept in sync by tests on both sides), and
+`sound: { kind: 'custom', id: '<id>' }` resolves to it. An id that resolves to nothing rings
+with the default alarm sound, and readiness shows "Custom sound unavailable" (never silent).
 
 ## iOS
 
@@ -249,8 +265,10 @@ ios/
 - **Vibration, volume and escalation belong to AlarmKit.** `vibration`, `escalation` and
   `important` are stored and round-tripped, but iOS gives no control over haptics, volume
   ramp or loudness. The system alarm behavior applies.
-- **Custom sounds:** `sound.kind: 'custom'` plays `AlertSound.named(<id>[.caf|.wav|.aiff|.m4a|.mp3])`
-  if the file is in the app bundle or `Library/Sounds`. Otherwise the default sound plays and
+- **Custom sounds:** the config plugin adds every `assets/sounds/<id>.<ext>` to the app
+  target's resources (main bundle). `sound.kind: 'custom'` plays
+  `AlertSound.named(<id>[.caf|.wav|.aiff|.m4a|.mp3])` if the file is in the app bundle or
+  `Library/Sounds`. Otherwise the default sound plays and
   readiness warns ("Custom sound unavailable"). `system` and `default` both use AlarmKit's
   default sound.
 - **Floating alarms with the app never running:** iOS doesn't wake the app on a zone change,
@@ -301,7 +319,7 @@ For each row, record: device / OS, pass / fail, the observed event log (Diagnost
 | 2 | Background | Alarm in 2 min, app backgrounded | Rings on time. Android: full-screen ringing UI. iOS: AlarmKit alert. |
 | 3 | Killed | Alarm in 2 min, swipe the app away | Rings on time. Opening from the alert routes to `/ringing` (`getActiveRinging`). |
 | 4 | Locked | Alarm in 2 min, lock the screen | Android: the screen turns on with the ringing UI over the lock screen. iOS: AlarmKit lock-screen alert. |
-| 5 | Reboot | Alarm in 10 min, reboot, **don't unlock** for 5 min | Android: restored from `LOCKED_BOOT_COMPLETED` before unlock; `schedule_restored_after_boot` logged. iOS: AlarmKit keeps the alarm. |
+| 5 | Reboot | Alarm in 10 min, reboot, **don't unlock** for 5 min | Android: restored from `LOCKED_BOOT_COMPLETED` before unlock (`adb logcat`: `direct boot: app init deferred`, no crash); it rings locked; after unlock the app opens normally; `schedule_restored_after_boot` logged. iOS: AlarmKit keeps the alarm. |
 | 6 | Reboot across fire time | Alarm in 3 min, power off 5 min, power on | Android: rings ASAP if it's within the 10-min grace, otherwise logged as missed. iOS: system behavior is recorded. |
 | 7 | Offline | Airplane mode, alarm in 2 min | Rings. No network is involved anywhere on the ring path. |
 | 8 | Permissions denied | Deny AlarmKit (iOS) / notifications + exact alarm (Android) | `schedule` rejects `PERMISSION_DENIED`, Diagnostics shows a blocking item with an action, and nothing pretends to be scheduled. |
