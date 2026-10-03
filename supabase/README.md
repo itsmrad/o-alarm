@@ -16,10 +16,11 @@ supabase/
     _shared/                  pure handler logic (Jest-tested from src/lib/purchases/*.test.ts)
     revenuecat-webhook/       RevenueCat -> `entitlements` mirror
     delete-account-cleanup/   RevenueCat subscriber + billing-row deletion
+    ai-insights/              AI explanation of deterministic insights (Pro, OpenRouter)
 ```
 
 Edge Functions live in `supabase/functions/` and write to the service-role-only tables below
-(see [RevenueCat (billing)](#revenuecat-billing)). The OpenRouter function is a later change.
+(see [RevenueCat (billing)](#revenuecat-billing) and [AI insights](#ai-insights-openrouter)).
 
 ## Schema overview
 
@@ -43,6 +44,7 @@ Edge Functions live in `supabase/functions/` and write to the service-role-only 
 | `guest_migrations` | RPC only | One-time guest→account upload window per account (D22). |
 | `data_export_requests` | client creates, service role progresses | Async export jobs. |
 | `revenuecat_events` | **service role only** | Processed webhook event ids (idempotency). Keyed by `app_user_id`, no FK; removed by `delete-account-cleanup`. |
+| `ai_usage` | **service role only** (`claim_ai_quota()`) | One row per accepted AI request, for the rolling 7-day rate limit. No client access. |
 
 **Why no `alarm_schedules` table:** D9 gives every alarm exactly one wall-clock rule, so a separate
 table would be a 1:1 child costing an extra join, tombstone and version per alarm. Concrete fire
@@ -147,7 +149,9 @@ No secrets in git (D21).
 | Edge Functions secrets (`supabase secrets set`) | `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` | Injected by Supabase; nothing to set. |
 | Edge Functions secrets | `REVENUECAT_WEBHOOK_AUTH` | Shared secret. Must equal the **Authorization header value** configured on the RevenueCat webhook (e.g. `Bearer <long random string>`). Unset => the webhook rejects everything (fail closed). |
 | Edge Functions secrets | `REVENUECAT_SECRET_API_KEY` | RevenueCat **secret** API key (v1, `sk_…`). Used for `TRANSFER` reconciliation and subscriber deletion. Unset => transfers are skipped and deletion reports `skipped` (it does not fail). |
-| Edge Functions secrets | `OPENROUTER_API_KEY`, `CLERK_SECRET_KEY` | Later changes (AI, server-side Clerk deletion); not read by the RevenueCat functions. |
+| Edge Functions secrets | `OPENROUTER_API_KEY` | OpenRouter key for `ai-insights`. Unset => the function answers `fallback: not_configured` and the app shows deterministic insights only. |
+| Edge Functions secrets | `OPENROUTER_MODEL` (optional) | OpenRouter model id for `ai-insights`; default `anthropic/claude-opus-5.5`. |
+| Edge Functions secrets | `CLERK_SECRET_KEY` | Later change (server-side Clerk deletion). |
 | App (`EXPO_PUBLIC_*`, publishable) | `EXPO_PUBLIC_REVENUECAT_IOS_KEY`, `EXPO_PUBLIC_REVENUECAT_ANDROID_KEY` | RevenueCat public SDK keys. Empty => preview mode (no store). |
 | App (`EXPO_PUBLIC_*`, publishable) | `EXPO_PUBLIC_TERMS_URL`, `EXPO_PUBLIC_PRIVACY_URL` | Paywall legal links (terms default to Apple's standard EULA; privacy is hidden until set). |
 
@@ -191,6 +195,8 @@ npx supabase@latest secrets set REVENUECAT_WEBHOOK_AUTH="Bearer $(openssl rand -
   REVENUECAT_SECRET_API_KEY=sk_...
 npx supabase@latest functions deploy revenuecat-webhook --no-verify-jwt
 npx supabase@latest functions deploy delete-account-cleanup --no-verify-jwt
+npx supabase@latest secrets set OPENROUTER_API_KEY=sk-or-...   # optional: OPENROUTER_MODEL=...
+npx supabase@latest functions deploy ai-insights --no-verify-jwt
 ```
 
 RevenueCat dashboard: Project -> Integrations -> Webhooks -> New: URL
@@ -201,3 +207,32 @@ restore behavior so a guest purchase moves to the Clerk user on sign-in.
 
 Serve locally: start the stack without `-x edge-runtime`, then
 `npx supabase@latest functions serve --no-verify-jwt --env-file supabase/.env`.
+
+## AI insights (OpenRouter)
+
+Pipeline (PRODUCT.md): local events -> deterministic analysis on the device (`src/domain/insights.ts`,
+free and offline) -> structured insights -> **LLM explanation** (Pro, this function). The AI only explains
+and suggests; it never changes alarms (D19).
+
+`POST /functions/v1/ai-insights` with `Authorization: Bearer <Clerk session token>` and an `AiRequest`
+body (`supabase/functions/ai-insights/core.ts`). `verify_jwt = false`; like `delete-account-cleanup`, the
+caller is verified by Postgres under their own token (`current_user_id()`, `has_entitlement('pro')`).
+
+- **Input is aggregates only.** A strict zod schema rejects unknown keys, free text and anything finer than
+  a civil date (no ids, labels, raw events or timestamps). The app builds it field by field
+  (`src/domain/insights-payload.ts`, property-tested).
+- **Gates:** 401 unverified caller, 400 payload outside the schema, 403 not Pro, 429 over the rolling
+  7-day limit (1 weekly report + 10 explanations per user, `claim_ai_quota()`; a claim is given back when
+  OpenRouter fails or times out).
+- **OpenRouter:** strict JSON-schema output, low reasoning effort, `provider.data_collection = deny`,
+  25 s timeout. The output is re-validated with zod (strict: no extra fields such as actions), suggestions
+  must reference a given insight id, and any causal, medical, link or "I changed your alarm" wording is
+  rejected.
+- **Failure never breaks the screen:** not configured, upstream error, timeout or rejected output all return
+  200 `{status: 'fallback'}` and the app shows the deterministic insights.
+- **Storage:** the validated explanation is upserted into `ai_insights` (service role) per user, type and
+  period. A weekly report is reused for its week without spending quota; a topic explanation is reused only
+  for an identical payload.
+
+Serve locally: `npx supabase@latest functions serve ai-insights --no-verify-jwt --env-file supabase/.env`
+(with `OPENROUTER_API_KEY` in that file).
