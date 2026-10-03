@@ -1,13 +1,25 @@
 import { act, fireEvent, renderRouter, screen, waitFor } from 'expo-router/testing-library';
 import { Alert } from 'react-native';
 
-import { endActiveSleepSession, getSleepService, shouldPromptCheckIn } from './sleep-runtime';
+import type { AppDatabase } from '@/db/types';
+import { openAppDatabase } from '@/db/client';
+
+import {
+  endActiveSleepSession,
+  shouldPromptCheckIn,
+  sleepServiceFor,
+  type SleepDeps,
+} from './sleep-runtime';
 
 // Real SQLite (better-sqlite3) + the real bundled migrations in place of expo-sqlite.
+// One database for the whole file, like the app's single connection: AppServices boots on
+// it and the sleep service is built on that same db (no second connection).
+let mockDb: unknown;
 jest.mock('@/db/client', () => ({
   openAppDatabase: async () => {
     const { createTestDatabase } = jest.requireActual('@/db/testing/test-db');
-    return createTestDatabase().db;
+    mockDb ??= createTestDatabase().db;
+    return mockDb;
   },
 }));
 jest.mock('expo-notifications', () => ({
@@ -24,6 +36,12 @@ jest.mock('expo-notifications', () => ({
   cancelScheduledNotificationAsync: jest.fn(async () => undefined),
 }));
 
+/** The same service the UI uses: keyed by the shared db. */
+const sleepDeps = async (): Promise<SleepDeps> => ({
+  db: (await openAppDatabase()) as AppDatabase,
+  deviceId: 'test-device',
+});
+
 const alertSpy = jest.spyOn(Alert, 'alert');
 beforeEach(() => alertSpy.mockReset());
 
@@ -35,7 +53,7 @@ const localMorning = () => {
 
 describe('morning check-in route', () => {
   it('saves energy and sleep quality, closes, and stops prompting', async () => {
-    expect(await shouldPromptCheckIn(localMorning())).toBe(true);
+    expect(await shouldPromptCheckIn(localMorning(), await sleepDeps())).toBe(true);
 
     const app = renderRouter('./app', { initialUrl: '/checkin' });
     // Energy 4, then sleep quality 3 (each group has its own 1-5 radios).
@@ -44,16 +62,16 @@ describe('morning check-in route', () => {
     fireEvent.press(screen.getAllByLabelText(/^3 of 5/)[1]!);
     await act(async () => fireEvent.press(screen.getByText('Save')));
 
-    const service = await getSleepService();
+    const service = sleepServiceFor(await sleepDeps());
     await waitFor(() => expect(service.listCheckIns()).toHaveLength(1));
     expect(service.listCheckIns()[0]).toMatchObject({ energy: 4, sleepQuality: 3 });
     await waitFor(() => expect(app.getPathname()).toBe('/'));
-    expect(await shouldPromptCheckIn(localMorning())).toBe(false);
+    expect(await shouldPromptCheckIn(localMorning(), await sleepDeps())).toBe(false);
     expect(alertSpy).not.toHaveBeenCalled();
   });
 
   it('skipping after an answer closes without erasing the saved answer', async () => {
-    const service = await getSleepService();
+    const service = sleepServiceFor(await sleepDeps());
     const before = service.listCheckIns();
     renderRouter('./app', { initialUrl: '/checkin' });
     const skip = await screen.findByText('Skip');
@@ -70,11 +88,11 @@ describe('Bedtime tab', () => {
 
     await act(async () => fireEvent.press(screen.getByText('Going to bed')));
     expect(await screen.findByText("I'm awake")).toBeTruthy();
-    const service = await getSleepService();
+    const service = sleepServiceFor(await sleepDeps());
     expect(service.getActiveSession()).not.toBeNull();
 
     await act(async () => {
-      await endActiveSleepSession(new Date(Date.now() + 8 * 3_600_000));
+      await endActiveSleepSession(new Date(Date.now() + 8 * 3_600_000), await sleepDeps());
     });
     await waitFor(() => expect(screen.queryByText("I'm awake")).toBeNull());
     expect(service.getActiveSession()).toBeNull();

@@ -14,7 +14,8 @@ import {
   type ReminderSyncResult,
 } from '@/lib/reminders';
 
-import { getSleepService } from './sleep-runtime';
+import { sleepServiceFor } from './sleep-runtime';
+import type { SleepService } from './sleep-service';
 
 /**
  * Recomputes tonight's reminder plan from the next alarm + sleep settings and makes the
@@ -22,9 +23,9 @@ import { getSleepService } from './sleep-runtime';
  */
 export async function refreshSleepReminders(
   alarms: AlarmService,
+  sleep: SleepService,
   now: Date = new Date(),
 ): Promise<ReminderSyncResult> {
-  const sleep = await getSleepService();
   const timeZone = deviceTimeZone();
   const plan = planReminders({
     now,
@@ -43,31 +44,24 @@ export async function refreshSleepReminders(
  * settings change. Also used by the Bedtime screen; concurrent runs are serialized.
  */
 export function useSleepReminderSync(): void {
-  const { alarms } = useAppServices();
+  const { alarms, db, deviceId } = useAppServices();
   useEffect(() => {
-    let cancelled = false;
-    const cleanups: (() => void)[] = [];
+    const sleep = sleepServiceFor({ db, deviceId });
     const run = () => {
-      if (!cancelled) refreshSleepReminders(alarms).catch(() => undefined);
+      refreshSleepReminders(alarms, sleep).catch(() => undefined);
     };
     run();
-    cleanups.push(alarms.subscribe(run));
-    getSleepService().then(
-      (sleep) => {
-        if (cancelled) return;
-        cleanups.push(sleep.subscribe(run));
-      },
-      () => undefined,
-    );
+    const offAlarms = alarms.subscribe(run);
+    const offSleep = sleep.subscribe(run);
     const appState = AppState.addEventListener('change', (next) => {
       if (next === 'active') run();
     });
-    cleanups.push(() => appState.remove());
     return () => {
-      cancelled = true;
-      cleanups.forEach((fn) => fn());
+      offAlarms();
+      offSleep();
+      appState.remove();
     };
-  }, [alarms]);
+  }, [alarms, db, deviceId]);
 }
 
 /** Renders nothing; mounts `useSleepReminderSync`. */
@@ -78,7 +72,7 @@ export function SleepReminderSync(): null {
 
 /** Notification permission for reminders, refreshed when the app returns to the foreground. */
 export function useReminderPermission() {
-  const { alarms } = useAppServices();
+  const { alarms, db, deviceId } = useAppServices();
   const [permission, setPermission] = useState<ReminderPermission | null>(null);
 
   useEffect(() => {
@@ -94,9 +88,9 @@ export function useReminderPermission() {
   const request = useCallback(async () => {
     const next = await requestReminderPermission();
     setPermission(next);
-    refreshSleepReminders(alarms).catch(() => undefined);
+    refreshSleepReminders(alarms, sleepServiceFor({ db, deviceId })).catch(() => undefined);
     return next;
-  }, [alarms]);
+  }, [alarms, db, deviceId]);
 
   return { permission, request };
 }

@@ -1,52 +1,46 @@
-import * as Crypto from 'expo-crypto';
-import { Platform } from 'react-native';
-
 import { deviceTimeZone } from '@/db/alarm-service';
-import { openAppDatabase } from '@/db/client';
-import { getOrCreateDeviceId } from '@/db/repositories/device';
+import type { AppDatabase } from '@/db/types';
 import { civilDate } from '@/domain/sleep';
 import { shouldPromptCheckInAt } from '@/domain/sleep-reminders';
 
 import { createSleepService, type SleepService } from './sleep-service';
 
-/**
- * The app-wide SleepService. Opens its own connection to the same on-device database
- * (WAL mode; sleep writes are rare and tiny), so this feature needs no change to the
- * shared app services. Lazy: nothing opens until the first sleep call.
- */
-let instance: Promise<SleepService> | null = null;
-
-export function getSleepService(): Promise<SleepService> {
-  if (!instance) {
-    const pending = (async () => {
-      const db = await openAppDatabase();
-      // Best effort: wait for a concurrent alarm write instead of failing with SQLITE_BUSY.
-      try {
-        (db as unknown as { $client?: { execSync?: (sql: string) => void } }).$client?.execSync?.(
-          'PRAGMA busy_timeout = 3000;',
-        );
-      } catch {
-        // Not fatal: the default behavior still works.
-      }
-      const deviceId = getOrCreateDeviceId(db, Crypto.randomUUID, Platform.OS, new Date());
-      return createSleepService({ db, deviceId });
-    })();
-    pending.catch(() => {
-      instance = null; // allow a retry after a failed open
-    });
-    instance = pending;
-  }
-  return instance;
+/** What the sleep feature needs from AppServices: the app's single database + device id. */
+export interface SleepDeps {
+  db: AppDatabase;
+  deviceId: string;
 }
 
 /**
- * INTEGRATION API — call when the user is up: on alarm dismissal (or Wake Check pass).
- * Closes the open sleep session at `at`. Resolves to null when no session was open or it
- * was unusable. Never throws into the ring path: failures resolve to null.
+ * One SleepService per database, built on the app's single connection (AppServices.db).
+ * The feature never opens a database of its own.
  */
-export async function endActiveSleepSession(at: Date = new Date()) {
+const cache = new WeakMap<AppDatabase, SleepService>();
+/** The service most recently handed out, for callers outside React (see below). */
+let current: SleepService | null = null;
+
+export function sleepServiceFor(deps: SleepDeps): SleepService {
+  let service = cache.get(deps.db);
+  if (!service) {
+    service = createSleepService({ db: deps.db, deviceId: deps.deviceId });
+    cache.set(deps.db, service);
+  }
+  current = service;
+  return service;
+}
+
+const resolve = (deps?: SleepDeps): SleepService | null => (deps ? sleepServiceFor(deps) : current);
+
+/**
+ * INTEGRATION API — call when the user is up: on alarm dismissal (or Wake Check pass).
+ * Closes the open sleep session at `at`. Pass `useAppServices()` as `services`; without it
+ * the service registered by any mounted sleep hook / `SleepReminderSync` is used.
+ * Resolves to null when no session was open, it was unusable, or no service is available.
+ * Never throws into the ring path.
+ */
+export async function endActiveSleepSession(at: Date = new Date(), services?: SleepDeps) {
   try {
-    return (await getSleepService()).endActiveSleepSession(at);
+    return resolve(services)?.endActiveSleepSession(at) ?? null;
   } catch {
     return null;
   }
@@ -56,10 +50,14 @@ export async function endActiveSleepSession(at: Date = new Date()) {
  * INTEGRATION API — after wake: should the morning check-in (route `/checkin`) be offered?
  * True on a morning (03:00-13:59 local) when no check-in or skip exists for today yet.
  */
-export async function shouldPromptCheckIn(now: Date = new Date()): Promise<boolean> {
+export async function shouldPromptCheckIn(
+  now: Date = new Date(),
+  services?: SleepDeps,
+): Promise<boolean> {
   const timeZone = deviceTimeZone();
   try {
-    const service = await getSleepService();
+    const service = resolve(services);
+    if (!service) return false;
     return shouldPromptCheckInAt({
       now,
       timeZone,

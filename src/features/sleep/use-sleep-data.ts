@@ -3,7 +3,9 @@ import { useEffect, useMemo, useState } from 'react';
 import type { SleepPrefs } from '@/domain/sleep';
 import type { ReminderPrefs } from '@/domain/sleep-reminders';
 
-import { getSleepService } from './sleep-runtime';
+import { useAppServices } from '@/lib/app-services';
+
+import { sleepServiceFor } from './sleep-runtime';
 import type { MorningCheckIn, SleepService, SleepSession } from './sleep-service';
 
 /** History window loaded for the screen (stats use the most recent 14 nights of it). */
@@ -20,28 +22,18 @@ export interface SleepData {
   checkIns: MorningCheckIn[];
 }
 
-export function useSleepService(): SleepService | null {
-  const [service, setService] = useState<SleepService | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    getSleepService().then(
-      (s) => !cancelled && setService(s),
-      () => undefined,
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  return service;
+export function useSleepService(): SleepService {
+  const { db, deviceId } = useAppServices();
+  return useMemo(() => sleepServiceFor({ db, deviceId }), [db, deviceId]);
 }
 
 /** Live sleep data; re-reads after every write through the sleep service. */
-export function useSleepData(): SleepData | null {
+export function useSleepData(): SleepData {
   const service = useSleepService();
   const [version, setVersion] = useState(0);
-  useEffect(() => service?.subscribe(() => setVersion((v) => v + 1)), [service]);
+  useEffect(() => service.subscribe(() => setVersion((v) => v + 1)), [service]);
   return useMemo(
-    () => (service ? readSleepData(service) : null),
+    () => readSleepData(service),
     // `version` is the invalidation signal for the service reads.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [service, version],

@@ -72,7 +72,6 @@ export function CheckInScreen() {
   const date = todayCivil(new Date(), deviceTimeZone());
 
   const save = () => {
-    if (!service) return;
     try {
       service.saveCheckIn({ date, energy, sleepQuality: quality, wakeSessionId });
       close();
@@ -83,7 +82,7 @@ export function CheckInScreen() {
 
   const skip = () => {
     try {
-      service?.skipCheckIn(date, wakeSessionId);
+      service.skipCheckIn(date, wakeSessionId);
     } finally {
       close();
     }
@@ -112,7 +111,7 @@ export function CheckInScreen() {
         <Button
           title="Save"
           size="lg"
-          disabled={!service || (energy === null && quality === null)}
+          disabled={energy === null && quality === null}
           onPress={save}
         />
         <Button title="Skip" variant="secondary" onPress={skip} />

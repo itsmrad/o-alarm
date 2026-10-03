@@ -6,11 +6,14 @@ import * as Crypto from 'expo-crypto';
 import { createAlarmService, deviceTimeZone, type AlarmService } from '@/db/alarm-service';
 import { openAppDatabase } from '@/db/client';
 import { getOrCreateDeviceId } from '@/db/repositories/device';
+import type { AppDatabase } from '@/db/types';
 import { resolveEngine, type AlarmEngine } from '@/engine';
 
 export interface AppServices {
   engine: AlarmEngine;
   alarms: AlarmService;
+  db: AppDatabase;
+  deviceId: string;
 }
 
 type BootState =
@@ -25,7 +28,7 @@ async function boot(): Promise<AppServices> {
   const deviceId = getOrCreateDeviceId(db, Crypto.randomUUID, Platform.OS, new Date());
   const engine = resolveEngine();
   const alarms = createAlarmService({ db, engine, deviceId });
-  return { engine, alarms };
+  return { engine, alarms, db, deviceId };
 }
 
 /**

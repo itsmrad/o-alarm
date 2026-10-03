@@ -1,5 +1,4 @@
 import { router } from 'expo-router';
-import { Text } from 'react-native';
 
 import { ListRow } from '@/components/list-row';
 import { Screen } from '@/components/screen';
@@ -23,11 +22,7 @@ export function BedtimeScreen() {
   useSleepReminderSync();
   return (
     <Screen>
-      {data ? (
-        <Content data={data} />
-      ) : (
-        <Text className="text-body text-foreground-muted">Loading…</Text>
-      )}
+      <Content data={data} />
     </Screen>
   );
 }
