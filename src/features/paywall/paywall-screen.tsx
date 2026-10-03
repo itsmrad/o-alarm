@@ -309,11 +309,7 @@ export function PaywallScreen() {
         ) : null}
       </Section>
 
-      <Button
-        title={isPro ? 'Done' : 'Not now'}
-        variant="secondary"
-        onPress={close}
-      />
+      <Button title={isPro ? 'Done' : 'Not now'} variant="secondary" onPress={close} />
     </Screen>
   );
 }
